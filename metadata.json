@@ -1,0 +1,6 @@
+{
+  "name": "JIT Video Editor",
+  "description": "A clean, dark-themed non-linear video editor workspace for uploading, previewing, and organizing MP4 and WebM clips.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
