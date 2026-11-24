@@ -4,6 +4,9 @@ import {
   Copy,
   Eraser,
   Film,
+  FlipHorizontal,
+  FlipVertical,
+  Move,
   Music,
   PanelRightClose,
   PanelRightOpen,
@@ -28,6 +31,8 @@ import type {
   BackgroundReplacementType,
   FilterPreset,
   MediaAsset,
+  MotionPreset,
+  MotionTransform,
   OverlayLayerItem,
   RightPanelTab,
   TextOverlayItem,
@@ -41,22 +46,17 @@ interface RightEditorPanelProps {
   onToggleCollapse: () => void;
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
-  // Text tab
-  textOverlays: TextOverlayItem[];
-  selectedTextId: string | null;
-  totalDuration: number;
-  currentTime: number;
-  onAddTextOverlay: () => void;
-  onSelectTextOverlay: (id: string) => void;
-  onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
-  onDeleteTextOverlay: (id: string) => void;
-  // Filters tab
+  // Motion & Transform tab
+  motionTransform: MotionTransform;
+  onUpdateMotionTransform: (patch: Partial<MotionTransform>) => void;
+  onResetMotionTransform: () => void;
+  // Filters & Color tab
   filters: VideoFilters;
   onUpdateFilters: (patch: Partial<VideoFilters>) => void;
   onApplyFilterPreset: (preset: FilterPreset) => void;
   onResetFilters: () => void;
   // BG Remove tab
-  bgTargetKey: string; // 'main' | overlay.id
+  bgTargetKey: string;
   onChangeBgTargetKey: (key: string) => void;
   mainBgRemoval: BackgroundRemovalConfig;
   overlayLayers: OverlayLayerItem[];
@@ -67,6 +67,15 @@ interface RightEditorPanelProps {
     patch: Partial<BackgroundRemovalConfig>
   ) => void;
   onUploadBackgroundReplacement: (file: File) => void;
+  // Text tab
+  textOverlays: TextOverlayItem[];
+  selectedTextId: string | null;
+  totalDuration: number;
+  currentTime: number;
+  onAddTextOverlay: () => void;
+  onSelectTextOverlay: (id: string) => void;
+  onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
+  onDeleteTextOverlay: (id: string) => void;
   // Audio & Speed tab
   audioAssets: AudioAsset[];
   audioSettings: AudioSettings;
@@ -100,10 +109,22 @@ const TEXT_COLOR_SWATCHES = [
 
 const FILTER_PRESETS: Array<{id: FilterPreset; label: string}> = [
   {id: 'none', label: 'Original'},
-  {id: 'bw', label: 'B&W'},
-  {id: 'vintage', label: 'Vintage'},
-  {id: 'warm', label: 'Warm'},
+  {id: 'teal-orange', label: 'Teal & Orange'},
+  {id: 'cyberpunk', label: 'Cyberpunk Neon'},
+  {id: 'noir', label: 'Noir B&W'},
+  {id: 'warm-sunset', label: 'Warm Sunset'},
+  {id: 'glitch', label: 'Glitch'},
   {id: 'cinematic', label: 'Cinematic'},
+  {id: 'vintage', label: 'Vintage'},
+  {id: 'bw', label: 'B&W'},
+  {id: 'warm', label: 'Warm'},
+];
+
+const MOTION_PRESETS: Array<{id: MotionPreset; label: string}> = [
+  {id: 'none', label: 'Static'},
+  {id: 'zoom-in', label: 'Slow Zoom In'},
+  {id: 'zoom-out', label: 'Slow Zoom Out'},
+  {id: 'camera-shake', label: 'Camera Shake'},
 ];
 
 const CHROMA_SWATCHES = [
@@ -119,14 +140,9 @@ export function RightEditorPanel({
   onToggleCollapse,
   activeTab,
   onTabChange,
-  textOverlays,
-  selectedTextId,
-  totalDuration,
-  currentTime,
-  onAddTextOverlay,
-  onSelectTextOverlay,
-  onUpdateTextOverlay,
-  onDeleteTextOverlay,
+  motionTransform,
+  onUpdateMotionTransform,
+  onResetMotionTransform,
   filters,
   onUpdateFilters,
   onApplyFilterPreset,
@@ -139,6 +155,13 @@ export function RightEditorPanel({
   onUpdateMainBgRemoval,
   onUpdateOverlayBgRemoval,
   onUploadBackgroundReplacement,
+  textOverlays,
+  selectedTextId,
+  totalDuration,
+  onAddTextOverlay,
+  onSelectTextOverlay,
+  onUpdateTextOverlay,
+  onDeleteTextOverlay,
   audioAssets,
   audioSettings,
   onUploadAudioFiles,
@@ -166,7 +189,6 @@ export function RightEditorPanel({
   const selectedText =
     textOverlays.find((item) => item.id === selectedTextId) ?? null;
 
-  // Resolve target config for BG Remove tab
   const targetOverlay =
     bgTargetKey !== 'main'
       ? overlayLayers.find((l) => l.id === bgTargetKey) ?? null
@@ -255,9 +277,10 @@ export function RightEditorPanel({
     shortLabel: string;
     icon: typeof TypeIcon;
   }> = [
-    {id: 'text', label: 'Text', shortLabel: 'Text', icon: TypeIcon},
-    {id: 'filters', label: 'Filters', shortLabel: 'Filters', icon: Sliders},
+    {id: 'motion', label: 'Motion & Transform', shortLabel: 'Motion', icon: Move},
+    {id: 'filters', label: 'Filters & Color', shortLabel: 'Color', icon: Sliders},
     {id: 'bg-remove', label: 'BG Remove', shortLabel: 'BG Cut', icon: Eraser},
+    {id: 'text', label: 'Text', shortLabel: 'Text', icon: TypeIcon},
     {id: 'audio', label: 'Audio & Speed', shortLabel: 'Audio', icon: Music},
     {id: 'ai', label: 'AI Studio', shortLabel: 'AI', icon: Sparkles},
   ];
@@ -266,7 +289,7 @@ export function RightEditorPanel({
     return (
       <aside
         aria-label="Editing Inspector (collapsed)"
-        className="w-10 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col items-center py-2.5 gap-2.5"
+        className="w-10 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col items-center py-2.5 gap-2"
       >
         <button
           type="button"
@@ -312,7 +335,7 @@ export function RightEditorPanel({
       aria-label="Editing Inspector"
       className="w-72 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0"
     >
-      {/* Inspector Header + Collapse Toggle */}
+      {/* Inspector Header */}
       <div className="px-3 py-2 border-b border-zinc-800/70 flex items-center justify-between gap-2 bg-[#101319]">
         <span className="text-xs font-semibold text-zinc-200 whitespace-nowrap">
           {tabs.find((t) => t.id === activeTab)?.label ?? 'Tools'}
@@ -328,11 +351,11 @@ export function RightEditorPanel({
         </button>
       </div>
 
-      {/* Tabs Header */}
+      {/* 6-Tab Bar */}
       <div
         role="tablist"
         aria-label="Editing Tools"
-        className="shrink-0 grid grid-cols-5 border-b border-zinc-800/80 bg-[#0E1116]"
+        className="shrink-0 grid grid-cols-6 border-b border-zinc-800/80 bg-[#0E1116]"
       >
         {tabs.map((tab) => {
           const Icon = tab.icon;
@@ -345,7 +368,7 @@ export function RightEditorPanel({
               title={tab.label}
               aria-selected={active}
               onClick={() => onTabChange(tab.id)}
-              className={`py-2 px-1 flex flex-col items-center justify-center gap-1 text-[10px] font-medium border-b-2 transition-colors whitespace-nowrap ${
+              className={`py-2 px-0.5 flex flex-col items-center justify-center gap-1 text-[10px] font-medium border-b-2 transition-colors whitespace-nowrap ${
                 active
                   ? 'border-blue-500 text-zinc-100 bg-[#12151B]'
                   : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'
@@ -360,6 +383,708 @@ export function RightEditorPanel({
 
       {/* Tab Body */}
       <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
+        {activeTab === 'motion' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-zinc-100">
+                Motion &amp; Transform
+              </h2>
+              <button
+                type="button"
+                onClick={onResetMotionTransform}
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
+              >
+                <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                <span>Reset</span>
+              </button>
+            </div>
+
+            {/* Animated Motion Presets */}
+            <div className="space-y-1.5">
+              <span className="block text-[11px] font-medium text-zinc-400">
+                Animated Presets
+              </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {MOTION_PRESETS.map((preset) => {
+                  const active = motionTransform.preset === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateMotionTransform({preset: preset.id})
+                      }
+                      className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                        active
+                          ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-3 pt-2 border-t border-zinc-800/80">
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="motion-zoom" className="text-zinc-300">
+                    Zoom
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {motionTransform.zoom}%
+                  </span>
+                </div>
+                <input
+                  id="motion-zoom"
+                  type="range"
+                  min={50}
+                  max={300}
+                  step={1}
+                  value={motionTransform.zoom}
+                  onChange={(e) =>
+                    onUpdateMotionTransform({zoom: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="motion-pan-x" className="text-zinc-300">
+                    X Pan
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {motionTransform.panX > 0
+                      ? `+${motionTransform.panX}%`
+                      : `${motionTransform.panX}%`}
+                  </span>
+                </div>
+                <input
+                  id="motion-pan-x"
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={1}
+                  value={motionTransform.panX}
+                  onChange={(e) =>
+                    onUpdateMotionTransform({panX: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="motion-pan-y" className="text-zinc-300">
+                    Y Pan
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {motionTransform.panY > 0
+                      ? `+${motionTransform.panY}%`
+                      : `${motionTransform.panY}%`}
+                  </span>
+                </div>
+                <input
+                  id="motion-pan-y"
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={1}
+                  value={motionTransform.panY}
+                  onChange={(e) =>
+                    onUpdateMotionTransform({panY: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="motion-rotate" className="text-zinc-300">
+                    Rotate
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {motionTransform.rotate}°
+                  </span>
+                </div>
+                <input
+                  id="motion-rotate"
+                  type="range"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={motionTransform.rotate}
+                  onChange={(e) =>
+                    onUpdateMotionTransform({rotate: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div className="pt-1 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateMotionTransform({flipH: !motionTransform.flipH})
+                  }
+                  aria-pressed={motionTransform.flipH}
+                  className={`py-2 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors ${
+                    motionTransform.flipH
+                      ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                      : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  <FlipHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Flip H</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateMotionTransform({flipV: !motionTransform.flipV})
+                  }
+                  aria-pressed={motionTransform.flipV}
+                  className={`py-2 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors ${
+                    motionTransform.flipV
+                      ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                      : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  <FlipVertical className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Flip V</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'filters' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-zinc-100">
+                Filters &amp; Color Grading
+              </h2>
+              <button
+                type="button"
+                onClick={onResetFilters}
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
+              >
+                <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                <span>Reset</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {FILTER_PRESETS.map((preset) => {
+                const active = filters.preset === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => onApplyFilterPreset(preset.id)}
+                    className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors truncate ${
+                      active
+                        ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                        : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="space-y-3 pt-2 border-t border-zinc-800/80">
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-brightness" className="text-zinc-300">
+                    Brightness
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.brightness}%
+                  </span>
+                </div>
+                <input
+                  id="filter-brightness"
+                  type="range"
+                  min={20}
+                  max={200}
+                  value={filters.brightness}
+                  onChange={(e) =>
+                    onUpdateFilters({brightness: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-contrast" className="text-zinc-300">
+                    Contrast
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.contrast}%
+                  </span>
+                </div>
+                <input
+                  id="filter-contrast"
+                  type="range"
+                  min={20}
+                  max={200}
+                  value={filters.contrast}
+                  onChange={(e) =>
+                    onUpdateFilters({contrast: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-saturation" className="text-zinc-300">
+                    Saturation
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.saturation}%
+                  </span>
+                </div>
+                <input
+                  id="filter-saturation"
+                  type="range"
+                  min={0}
+                  max={200}
+                  value={filters.saturation}
+                  onChange={(e) =>
+                    onUpdateFilters({saturation: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-hue" className="text-zinc-300">
+                    Hue Rotate
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.hueRotate}°
+                  </span>
+                </div>
+                <input
+                  id="filter-hue"
+                  type="range"
+                  min={-180}
+                  max={180}
+                  value={filters.hueRotate}
+                  onChange={(e) =>
+                    onUpdateFilters({hueRotate: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-vignette" className="text-zinc-300">
+                    Vignette
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.vignette}%
+                  </span>
+                </div>
+                <input
+                  id="filter-vignette"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={filters.vignette}
+                  onChange={(e) =>
+                    onUpdateFilters({vignette: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-sharpen" className="text-zinc-300">
+                    Sharpen
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.sharpen}%
+                  </span>
+                </div>
+                <input
+                  id="filter-sharpen"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={filters.sharpen}
+                  onChange={(e) =>
+                    onUpdateFilters({sharpen: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="filter-blur" className="text-zinc-300">
+                    Blur
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {filters.blur}px
+                  </span>
+                </div>
+                <input
+                  id="filter-blur"
+                  type="range"
+                  min={0}
+                  max={12}
+                  step={0.5}
+                  value={filters.blur}
+                  onChange={(e) =>
+                    onUpdateFilters({blur: Number(e.target.value)})
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'bg-remove' && (
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xs font-semibold text-zinc-100">
+                Background Remover
+              </h2>
+              <p className="text-[10px] text-zinc-400 mt-0.5">
+                AI person cutout or green/color screen keying
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="bg-target-select"
+                className="block text-[11px] font-medium text-zinc-400 mb-1"
+              >
+                Target Layer
+              </label>
+              <select
+                id="bg-target-select"
+                value={targetOverlay ? targetOverlay.id : 'main'}
+                onChange={(e) => onChangeBgTargetKey(e.target.value)}
+                className="w-full rounded-lg border border-zinc-700/80 bg-[#0B0D10] px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
+              >
+                <option value="main">Main Video Track</option>
+                {overlayLayers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>
+                    Overlay: {layer.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[11px] font-medium text-zinc-400">
+                Removal Mode
+              </span>
+              <div className="grid grid-cols-1 gap-1.5">
+                {(
+                  [
+                    {id: 'none', label: 'Off (Original Background)'},
+                    {id: 'ai-person', label: 'AI Auto Person Remove'},
+                    {
+                      id: 'chroma-key',
+                      label: 'Chroma Key (Green / Color Screen)',
+                    },
+                  ] as Array<{id: BackgroundRemovalMode; label: string}>
+                ).map((m) => {
+                  const active = activeBgConfig.mode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => updateTargetBgRemoval({mode: m.id})}
+                      className={`px-3 py-2 rounded-lg border text-left text-[11px] font-medium transition-colors ${
+                        active
+                          ? 'border-blue-500 bg-blue-500/15 text-blue-100'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {activeBgConfig.mode === 'ai-person' && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-2.5">
+                <div>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <label htmlFor="ai-mask-blur" className="text-zinc-300">
+                      Edge Feathering
+                    </label>
+                    <span className="font-mono tabular-nums text-zinc-400">
+                      {activeBgConfig.maskBlur.toFixed(1)}px
+                    </span>
+                  </div>
+                  <input
+                    id="ai-mask-blur"
+                    type="range"
+                    min={0}
+                    max={4}
+                    step={0.5}
+                    value={activeBgConfig.maskBlur}
+                    onChange={(e) =>
+                      updateTargetBgRemoval({maskBlur: Number(e.target.value)})
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                  Powered by MediaPipe Selfie Segmentation running locally in
+                  your browser.
+                </p>
+              </div>
+            )}
+
+            {activeBgConfig.mode === 'chroma-key' && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-3">
+                <div>
+                  <span className="block text-[11px] font-medium text-zinc-400 mb-1.5">
+                    Key Color
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {CHROMA_SWATCHES.map((sw) => (
+                      <button
+                        key={sw.hex}
+                        type="button"
+                        title={sw.label}
+                        onClick={() =>
+                          updateTargetBgRemoval({keyColor: sw.hex})
+                        }
+                        className={`w-6 h-6 rounded border ${
+                          activeBgConfig.keyColor.toLowerCase() ===
+                          sw.hex.toLowerCase()
+                            ? 'border-white scale-110'
+                            : 'border-zinc-700'
+                        }`}
+                        style={{backgroundColor: sw.hex}}
+                      />
+                    ))}
+                    <input
+                      type="color"
+                      value={activeBgConfig.keyColor}
+                      onChange={(e) =>
+                        updateTargetBgRemoval({keyColor: e.target.value})
+                      }
+                      aria-label="Chroma key color picker"
+                      className="w-8 h-6 rounded border border-zinc-700 bg-transparent cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <label htmlFor="chroma-similarity" className="text-zinc-300">
+                      Similarity Threshold
+                    </label>
+                    <span className="font-mono tabular-nums text-zinc-400">
+                      {Math.round(activeBgConfig.similarity * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    id="chroma-similarity"
+                    type="range"
+                    min={0.05}
+                    max={0.6}
+                    step={0.01}
+                    value={activeBgConfig.similarity}
+                    onChange={(e) =>
+                      updateTargetBgRemoval({
+                        similarity: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <label htmlFor="chroma-smoothness" className="text-zinc-300">
+                      Edge Smoothness
+                    </label>
+                    <span className="font-mono tabular-nums text-zinc-400">
+                      {Math.round(activeBgConfig.smoothness * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    id="chroma-smoothness"
+                    type="range"
+                    min={0.01}
+                    max={0.35}
+                    step={0.01}
+                    value={activeBgConfig.smoothness}
+                    onChange={(e) =>
+                      updateTargetBgRemoval({
+                        smoothness: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
+
+            {!targetOverlay && activeBgConfig.mode !== 'none' && (
+              <div className="pt-3 border-t border-zinc-800/80 space-y-3">
+                <span className="block text-[11px] font-medium text-zinc-300">
+                  Replace Removed Background
+                </span>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(
+                    [
+                      {id: 'solid', label: 'Solid Color'},
+                      {id: 'blur', label: 'Blurred Video'},
+                      {id: 'transparent', label: 'Black / Clear'},
+                      {id: 'image', label: 'Custom Media'},
+                    ] as Array<{id: BackgroundReplacementType; label: string}>
+                  ).map((rep) => {
+                    const active =
+                      activeBgConfig.replacementType === rep.id ||
+                      (rep.id === 'image' &&
+                        activeBgConfig.replacementType === 'video');
+                    return (
+                      <button
+                        key={rep.id}
+                        type="button"
+                        onClick={() =>
+                          updateTargetBgRemoval({replacementType: rep.id})
+                        }
+                        className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                          active
+                            ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                            : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        {rep.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {activeBgConfig.replacementType === 'solid' && (
+                  <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-2">
+                    <span className="text-[11px] text-zinc-300">
+                      Background Color
+                    </span>
+                    <input
+                      type="color"
+                      value={activeBgConfig.replacementColor}
+                      onChange={(e) =>
+                        updateTargetBgRemoval({
+                          replacementColor: e.target.value,
+                        })
+                      }
+                      aria-label="Replacement background color"
+                      className="w-7 h-5 rounded border border-zinc-700 bg-transparent cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {activeBgConfig.replacementType === 'blur' && (
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] mb-1">
+                      <label htmlFor="bg-rep-blur" className="text-zinc-300">
+                        Background Blur
+                      </label>
+                      <span className="font-mono tabular-nums text-zinc-400">
+                        {activeBgConfig.replacementBlur}px
+                      </span>
+                    </div>
+                    <input
+                      id="bg-rep-blur"
+                      type="range"
+                      min={4}
+                      max={28}
+                      step={1}
+                      value={activeBgConfig.replacementBlur}
+                      onChange={(e) =>
+                        updateTargetBgRemoval({
+                          replacementBlur: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-blue-500 cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {(activeBgConfig.replacementType === 'image' ||
+                  activeBgConfig.replacementType === 'video') && (
+                  <div className="space-y-2">
+                    <input
+                      ref={bgFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,.png,.jpg,.jpeg,.webp,.mp4,.webm"
+                      onChange={handleBgReplacementFileChange}
+                      className="sr-only"
+                      aria-label="Upload custom background image or video"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => bgFileInputRef.current?.click()}
+                      className="w-full py-2 px-3 rounded-lg border border-dashed border-zinc-700 bg-[#0D1015] hover:border-zinc-500 text-[11px] font-medium text-zinc-200 inline-flex items-center justify-center gap-1.5"
+                    >
+                      <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Upload BG Image or Video</span>
+                    </button>
+
+                    {activeBgConfig.replacementAssetName && (
+                      <p className="text-[11px] text-emerald-300 truncate">
+                        Active BG: {activeBgConfig.replacementAssetName}
+                      </p>
+                    )}
+
+                    {mediaAssets.length > 0 && (
+                      <div className="max-h-24 overflow-y-auto space-y-1">
+                        {mediaAssets.map((asset) => (
+                          <button
+                            key={asset.id}
+                            type="button"
+                            onClick={() =>
+                              updateTargetBgRemoval({
+                                replacementType: asset.kind,
+                                replacementAssetId: asset.id,
+                                replacementAssetUrl: asset.url,
+                                replacementAssetKind: asset.kind,
+                                replacementAssetName: asset.name,
+                              })
+                            }
+                            className={`w-full px-2 py-1 rounded border text-left text-[11px] truncate transition-colors ${
+                              activeBgConfig.replacementAssetId === asset.id
+                                ? 'border-blue-500 bg-blue-500/10 text-blue-200'
+                                : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                            }`}
+                          >
+                            {asset.kind === 'image' ? 'Image' : 'Video'}:{' '}
+                            {asset.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'text' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-2">
@@ -621,484 +1346,6 @@ export function RightEditorPanel({
                 <p className="text-[11px] text-zinc-400">
                   Add a text overlay or select one from the Text Track.
                 </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'filters' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-zinc-100">
-                Color &amp; Filters
-              </h2>
-              <button
-                type="button"
-                onClick={onResetFilters}
-                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
-              >
-                <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                <span>Reset</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1.5">
-              {FILTER_PRESETS.map((preset) => {
-                const active = filters.preset === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => onApplyFilterPreset(preset.id)}
-                    className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
-                      active
-                        ? 'border-blue-500 bg-blue-500/15 text-blue-200'
-                        : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="space-y-3.5 pt-2 border-t border-zinc-800/80">
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="filter-brightness" className="text-zinc-300">
-                    Brightness
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {filters.brightness}%
-                  </span>
-                </div>
-                <input
-                  id="filter-brightness"
-                  type="range"
-                  min={20}
-                  max={200}
-                  value={filters.brightness}
-                  onChange={(e) =>
-                    onUpdateFilters({brightness: Number(e.target.value)})
-                  }
-                  className="w-full accent-blue-500 cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="filter-contrast" className="text-zinc-300">
-                    Contrast
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {filters.contrast}%
-                  </span>
-                </div>
-                <input
-                  id="filter-contrast"
-                  type="range"
-                  min={20}
-                  max={200}
-                  value={filters.contrast}
-                  onChange={(e) =>
-                    onUpdateFilters({contrast: Number(e.target.value)})
-                  }
-                  className="w-full accent-blue-500 cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="filter-saturation" className="text-zinc-300">
-                    Saturation
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {filters.saturation}%
-                  </span>
-                </div>
-                <input
-                  id="filter-saturation"
-                  type="range"
-                  min={0}
-                  max={200}
-                  value={filters.saturation}
-                  onChange={(e) =>
-                    onUpdateFilters({saturation: Number(e.target.value)})
-                  }
-                  className="w-full accent-blue-500 cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="filter-blur" className="text-zinc-300">
-                    Blur
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {filters.blur}px
-                  </span>
-                </div>
-                <input
-                  id="filter-blur"
-                  type="range"
-                  min={0}
-                  max={12}
-                  step={0.5}
-                  value={filters.blur}
-                  onChange={(e) =>
-                    onUpdateFilters({blur: Number(e.target.value)})
-                  }
-                  className="w-full accent-blue-500 cursor-pointer"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'bg-remove' && (
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-xs font-semibold text-zinc-100">
-                Background Remover
-              </h2>
-              <p className="text-[10px] text-zinc-400 mt-0.5">
-                AI person cutout or green/color screen keying
-              </p>
-            </div>
-
-            {/* Target Layer Selector */}
-            <div>
-              <label
-                htmlFor="bg-target-select"
-                className="block text-[11px] font-medium text-zinc-400 mb-1"
-              >
-                Target Layer
-              </label>
-              <select
-                id="bg-target-select"
-                value={targetOverlay ? targetOverlay.id : 'main'}
-                onChange={(e) => onChangeBgTargetKey(e.target.value)}
-                className="w-full rounded-lg border border-zinc-700/80 bg-[#0B0D10] px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
-              >
-                <option value="main">Main Video Track</option>
-                {overlayLayers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>
-                    Overlay: {layer.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Removal Mode */}
-            <div className="space-y-1.5">
-              <span className="block text-[11px] font-medium text-zinc-400">
-                Removal Mode
-              </span>
-              <div className="grid grid-cols-1 gap-1.5">
-                {(
-                  [
-                    {id: 'none', label: 'Off (Original Background)'},
-                    {
-                      id: 'ai-person',
-                      label: 'AI Auto Person Remove',
-                    },
-                    {
-                      id: 'chroma-key',
-                      label: 'Chroma Key (Green / Color Screen)',
-                    },
-                  ] as Array<{id: BackgroundRemovalMode; label: string}>
-                ).map((m) => {
-                  const active = activeBgConfig.mode === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => updateTargetBgRemoval({mode: m.id})}
-                      className={`px-3 py-2 rounded-lg border text-left text-[11px] font-medium transition-colors ${
-                        active
-                          ? 'border-blue-500 bg-blue-500/15 text-blue-100'
-                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      {m.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {activeBgConfig.mode === 'ai-person' && (
-              <div className="pt-2 border-t border-zinc-800/80 space-y-2.5">
-                <div>
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <label htmlFor="ai-mask-blur" className="text-zinc-300">
-                      Edge Feathering
-                    </label>
-                    <span className="font-mono tabular-nums text-zinc-400">
-                      {activeBgConfig.maskBlur.toFixed(1)}px
-                    </span>
-                  </div>
-                  <input
-                    id="ai-mask-blur"
-                    type="range"
-                    min={0}
-                    max={4}
-                    step={0.5}
-                    value={activeBgConfig.maskBlur}
-                    onChange={(e) =>
-                      updateTargetBgRemoval({maskBlur: Number(e.target.value)})
-                    }
-                    className="w-full accent-blue-500 cursor-pointer"
-                  />
-                </div>
-                <p className="text-[10px] text-zinc-500 leading-relaxed">
-                  Powered by MediaPipe Selfie Segmentation running locally in
-                  your browser.
-                </p>
-              </div>
-            )}
-
-            {activeBgConfig.mode === 'chroma-key' && (
-              <div className="pt-2 border-t border-zinc-800/80 space-y-3">
-                <div>
-                  <span className="block text-[11px] font-medium text-zinc-400 mb-1.5">
-                    Key Color
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {CHROMA_SWATCHES.map((sw) => (
-                      <button
-                        key={sw.hex}
-                        type="button"
-                        title={sw.label}
-                        onClick={() =>
-                          updateTargetBgRemoval({keyColor: sw.hex})
-                        }
-                        className={`w-6 h-6 rounded border ${
-                          activeBgConfig.keyColor.toLowerCase() ===
-                          sw.hex.toLowerCase()
-                            ? 'border-white scale-110'
-                            : 'border-zinc-700'
-                        }`}
-                        style={{backgroundColor: sw.hex}}
-                      />
-                    ))}
-                    <input
-                      type="color"
-                      value={activeBgConfig.keyColor}
-                      onChange={(e) =>
-                        updateTargetBgRemoval({keyColor: e.target.value})
-                      }
-                      aria-label="Chroma key color picker"
-                      className="w-8 h-6 rounded border border-zinc-700 bg-transparent cursor-pointer"
-                    />
-                    <span className="text-[11px] font-mono text-zinc-400 uppercase">
-                      {activeBgConfig.keyColor}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <label htmlFor="chroma-similarity" className="text-zinc-300">
-                      Similarity Threshold
-                    </label>
-                    <span className="font-mono tabular-nums text-zinc-400">
-                      {Math.round(activeBgConfig.similarity * 100)}%
-                    </span>
-                  </div>
-                  <input
-                    id="chroma-similarity"
-                    type="range"
-                    min={0.05}
-                    max={0.6}
-                    step={0.01}
-                    value={activeBgConfig.similarity}
-                    onChange={(e) =>
-                      updateTargetBgRemoval({
-                        similarity: Number(e.target.value),
-                      })
-                    }
-                    className="w-full accent-blue-500 cursor-pointer"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <label htmlFor="chroma-smoothness" className="text-zinc-300">
-                      Edge Smoothness
-                    </label>
-                    <span className="font-mono tabular-nums text-zinc-400">
-                      {Math.round(activeBgConfig.smoothness * 100)}%
-                    </span>
-                  </div>
-                  <input
-                    id="chroma-smoothness"
-                    type="range"
-                    min={0.01}
-                    max={0.35}
-                    step={0.01}
-                    value={activeBgConfig.smoothness}
-                    onChange={(e) =>
-                      updateTargetBgRemoval({
-                        smoothness: Number(e.target.value),
-                      })
-                    }
-                    className="w-full accent-blue-500 cursor-pointer"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Background Replacement (for Main Video Track) */}
-            {!targetOverlay && activeBgConfig.mode !== 'none' && (
-              <div className="pt-3 border-t border-zinc-800/80 space-y-3">
-                <span className="block text-[11px] font-medium text-zinc-300">
-                  Replace Removed Background
-                </span>
-
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(
-                    [
-                      {id: 'solid', label: 'Solid Color'},
-                      {id: 'blur', label: 'Blurred Video'},
-                      {id: 'transparent', label: 'Black / Clear'},
-                      {id: 'image', label: 'Custom Media'},
-                    ] as Array<{id: BackgroundReplacementType; label: string}>
-                  ).map((rep) => {
-                    const active =
-                      activeBgConfig.replacementType === rep.id ||
-                      (rep.id === 'image' &&
-                        activeBgConfig.replacementType === 'video');
-                    return (
-                      <button
-                        key={rep.id}
-                        type="button"
-                        onClick={() =>
-                          updateTargetBgRemoval({replacementType: rep.id})
-                        }
-                        className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
-                          active
-                            ? 'border-blue-500 bg-blue-500/15 text-blue-200'
-                            : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                        }`}
-                      >
-                        {rep.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {activeBgConfig.replacementType === 'solid' && (
-                  <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-2">
-                    <span className="text-[11px] text-zinc-300">
-                      Background Color
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono text-zinc-400 uppercase">
-                        {activeBgConfig.replacementColor}
-                      </span>
-                      <input
-                        type="color"
-                        value={activeBgConfig.replacementColor}
-                        onChange={(e) =>
-                          updateTargetBgRemoval({
-                            replacementColor: e.target.value,
-                          })
-                        }
-                        aria-label="Replacement background color"
-                        className="w-7 h-5 rounded border border-zinc-700 bg-transparent cursor-pointer"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {activeBgConfig.replacementType === 'blur' && (
-                  <div>
-                    <div className="flex items-center justify-between text-[11px] mb-1">
-                      <label htmlFor="bg-rep-blur" className="text-zinc-300">
-                        Background Blur
-                      </label>
-                      <span className="font-mono tabular-nums text-zinc-400">
-                        {activeBgConfig.replacementBlur}px
-                      </span>
-                    </div>
-                    <input
-                      id="bg-rep-blur"
-                      type="range"
-                      min={4}
-                      max={28}
-                      step={1}
-                      value={activeBgConfig.replacementBlur}
-                      onChange={(e) =>
-                        updateTargetBgRemoval({
-                          replacementBlur: Number(e.target.value),
-                        })
-                      }
-                      className="w-full accent-blue-500 cursor-pointer"
-                    />
-                  </div>
-                )}
-
-                {(activeBgConfig.replacementType === 'image' ||
-                  activeBgConfig.replacementType === 'video') && (
-                  <div className="space-y-2">
-                    <input
-                      ref={bgFileInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,.png,.jpg,.jpeg,.webp,.mp4,.webm"
-                      onChange={handleBgReplacementFileChange}
-                      className="sr-only"
-                      aria-label="Upload custom background image or video"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => bgFileInputRef.current?.click()}
-                      className="w-full py-2 px-3 rounded-lg border border-dashed border-zinc-700 bg-[#0D1015] hover:border-zinc-500 text-[11px] font-medium text-zinc-200 inline-flex items-center justify-center gap-1.5"
-                    >
-                      <Upload className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Upload BG Image or Video</span>
-                    </button>
-
-                    {activeBgConfig.replacementAssetName && (
-                      <p className="text-[11px] text-emerald-300 truncate">
-                        Active BG: {activeBgConfig.replacementAssetName}
-                      </p>
-                    )}
-
-                    {mediaAssets.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-[10px] text-zinc-500">
-                          Or choose from Media Upload:
-                        </span>
-                        <div className="max-h-24 overflow-y-auto space-y-1">
-                          {mediaAssets.map((asset) => (
-                            <button
-                              key={asset.id}
-                              type="button"
-                              onClick={() =>
-                                updateTargetBgRemoval({
-                                  replacementType: asset.kind,
-                                  replacementAssetId: asset.id,
-                                  replacementAssetUrl: asset.url,
-                                  replacementAssetKind: asset.kind,
-                                  replacementAssetName: asset.name,
-                                })
-                              }
-                              className={`w-full px-2 py-1 rounded border text-left text-[11px] truncate transition-colors ${
-                                activeBgConfig.replacementAssetId === asset.id
-                                  ? 'border-blue-500 bg-blue-500/10 text-blue-200'
-                                  : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                              }`}
-                            >
-                              {asset.kind === 'image' ? 'Image' : 'Video'}:{' '}
-                              {asset.name}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )}
           </div>

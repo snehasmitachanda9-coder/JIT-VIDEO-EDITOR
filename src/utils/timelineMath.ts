@@ -1,4 +1,5 @@
 import type {
+  ClipTransition,
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
@@ -7,9 +8,18 @@ import type {
 
 export interface ComputedVideoSegment {
   clip: TimelineVideoClip;
+  index: number;
   timelineStart: number;
   timelineEnd: number;
   effectiveDuration: number;
+  effectiveTransitionIn: number; // Actual clamped overlap duration with previous clip
+}
+
+export interface ActiveVideoRenderState {
+  primary: ComputedVideoSegment | null;
+  outgoing: ComputedVideoSegment | null;
+  transition: ClipTransition | null;
+  transitionProgress: number; // 0..1 when transitioning
 }
 
 export function getVideoClipEffectiveDuration(
@@ -17,6 +27,9 @@ export function getVideoClipEffectiveDuration(
   playbackSpeed: number
 ): number {
   const raw = Math.max(0.1, clip.trimEnd - clip.trimStart);
+  if (clip.kind === 'freeze') {
+    return raw;
+  }
   const safeSpeed = Math.max(0.5, Math.min(2, playbackSpeed));
   return raw / safeSpeed;
 }
@@ -25,18 +38,37 @@ export function computeVideoTimelineSegments(
   clips: TimelineVideoClip[],
   playbackSpeed: number
 ): ComputedVideoSegment[] {
-  let cursor = 0;
-  return clips.map((clip) => {
+  const segments: ComputedVideoSegment[] = [];
+
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i];
     const effectiveDuration = getVideoClipEffectiveDuration(clip, playbackSpeed);
-    const segment: ComputedVideoSegment = {
+
+    let overlap = 0;
+    if (i > 0 && clip.transitionIn.type !== 'none') {
+      const prevSeg = segments[i - 1];
+      const maxOverlap = Math.min(
+        prevSeg.effectiveDuration * 0.45,
+        effectiveDuration * 0.45
+      );
+      overlap = Math.max(0, Math.min(clip.transitionIn.duration, maxOverlap));
+    }
+
+    const timelineStart =
+      i === 0 ? 0 : Math.max(0, segments[i - 1].timelineEnd - overlap);
+    const timelineEnd = timelineStart + effectiveDuration;
+
+    segments.push({
       clip,
-      timelineStart: cursor,
-      timelineEnd: cursor + effectiveDuration,
+      index: i,
+      timelineStart,
+      timelineEnd,
       effectiveDuration,
-    };
-    cursor += effectiveDuration;
-    return segment;
-  });
+      effectiveTransitionIn: overlap,
+    });
+  }
+
+  return segments;
 }
 
 export function getAudioClipDuration(clip: TimelineAudioClip): number {
@@ -74,11 +106,48 @@ export function computeTotalTimelineDuration(
   return Math.max(videoEnd, overlayEnd, audioEnd, textEnd);
 }
 
-export function findActiveVideoSegment(
+export function resolveVideoStateAtTime(
   segments: ComputedVideoSegment[],
   timelineTime: number
-): ComputedVideoSegment | null {
-  if (segments.length === 0) return null;
+): ActiveVideoRenderState {
+  if (segments.length === 0) {
+    return {
+      primary: null,
+      outgoing: null,
+      transition: null,
+      transitionProgress: 0,
+    };
+  }
+
+  // Check if timelineTime falls inside an overlap transition zone between segments[i-1] and segments[i]
+  for (let i = 1; i < segments.length; i++) {
+    const incoming = segments[i];
+    const outgoing = segments[i - 1];
+    if (
+      incoming.effectiveTransitionIn > 0.01 &&
+      timelineTime >= incoming.timelineStart &&
+      timelineTime < outgoing.timelineEnd
+    ) {
+      const progress = Math.min(
+        1,
+        Math.max(
+          0,
+          (timelineTime - incoming.timelineStart) /
+            incoming.effectiveTransitionIn
+        )
+      );
+      return {
+        primary: incoming,
+        outgoing,
+        transition: {
+          type: incoming.clip.transitionIn.type,
+          duration: incoming.effectiveTransitionIn,
+        },
+        transitionProgress: progress,
+      };
+    }
+  }
+
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const isLast = i === segments.length - 1;
@@ -86,10 +155,21 @@ export function findActiveVideoSegment(
       timelineTime >= seg.timelineStart &&
       (isLast ? timelineTime <= seg.timelineEnd : timelineTime < seg.timelineEnd)
     ) {
-      return seg;
+      return {
+        primary: seg,
+        outgoing: null,
+        transition: null,
+        transitionProgress: 0,
+      };
     }
   }
-  return null;
+
+  return {
+    primary: null,
+    outgoing: null,
+    transition: null,
+    transitionProgress: 0,
+  };
 }
 
 export function extractAudioDuration(objectUrl: string): Promise<number> {

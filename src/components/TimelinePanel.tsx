@@ -5,26 +5,32 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import {
+  ArrowLeftRight,
   Film,
   Layers,
   Music,
   Scissors,
+  Snowflake,
   Trash2,
   Type as TypeIcon,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import type {
+  ClipTransition,
   OverlayLayerItem,
   SelectedTimelineItem,
   TextOverlayItem,
   TimelineAudioClip,
   TimelineVideoClip,
+  TransitionType,
 } from '../types/editor';
 import {formatTime} from '../utils/formatTime';
 import {
   computeVideoTimelineSegments,
   getAudioClipDuration,
+  resolveVideoStateAtTime,
 } from '../utils/timelineMath';
 
 interface TimelinePanelProps {
@@ -39,12 +45,21 @@ interface TimelinePanelProps {
   onSelectItem: (item: SelectedTimelineItem) => void;
   onSeek: (time: number) => void;
   onSplitSelected: () => void;
+  onFreezeFrame: () => void;
   onDeleteSelected: () => void;
   onTrimVideoClip: (id: string, trimStart: number, trimEnd: number) => void;
+  onUpdateClipTransition: (clipId: string, transition: ClipTransition) => void;
   onUpdateOverlay: (id: string, patch: Partial<OverlayLayerItem>) => void;
   onUpdateAudioClip: (id: string, patch: Partial<TimelineAudioClip>) => void;
   onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
 }
+
+const TRANSITION_OPTIONS: Array<{id: TransitionType; label: string}> = [
+  {id: 'none', label: 'None'},
+  {id: 'crossfade', label: 'Crossfade'},
+  {id: 'slide-left', label: 'Slide Left'},
+  {id: 'zoom', label: 'Zoom'},
+];
 
 type DragOperation =
   | {kind: 'playhead'}
@@ -54,6 +69,7 @@ type DragOperation =
       initialX: number;
       origTrimStart: number;
       origTrimEnd: number;
+      clipKind: 'video' | 'freeze';
     }
   | {
       kind: 'video-trim-right';
@@ -62,6 +78,7 @@ type DragOperation =
       origTrimStart: number;
       origTrimEnd: number;
       sourceDuration: number;
+      clipKind: 'video' | 'freeze';
     }
   | {
       kind: 'overlay-move';
@@ -104,6 +121,7 @@ type DragOperation =
       kind: 'audio-trim-right';
       id: string;
       initialX: number;
+      origStartTime: number;
       origTrimStart: number;
       origTrimEnd: number;
       sourceDuration: number;
@@ -142,13 +160,18 @@ export function TimelinePanel({
   onSelectItem,
   onSeek,
   onSplitSelected,
+  onFreezeFrame,
   onDeleteSelected,
   onTrimVideoClip,
+  onUpdateClipTransition,
   onUpdateOverlay,
   onUpdateAudioClip,
   onUpdateTextOverlay,
 }: TimelinePanelProps) {
   const [pxPerSecond, setPxPerSecond] = useState(42);
+  const [editingTransitionClipId, setEditingTransitionClipId] = useState<
+    string | null
+  >(null);
   const trackContainerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragOperation | null>(null);
 
@@ -159,6 +182,11 @@ export function TimelinePanel({
 
   const displaySeconds = Math.max(20, Math.ceil(totalDuration + 6));
   const trackWidthPx = Math.max(760, displaySeconds * pxPerSecond);
+
+  const canFreeze = useMemo(() => {
+    const state = resolveVideoStateAtTime(videoSegments, currentTime);
+    return Boolean(state.primary);
+  }, [videoSegments, currentTime]);
 
   const canSplit = useMemo(() => {
     if (!selectedItem) return false;
@@ -196,6 +224,14 @@ export function TimelinePanel({
     currentTime,
   ]);
 
+  const editingTransitionClip = useMemo(
+    () =>
+      editingTransitionClipId
+        ? videoClips.find((c) => c.id === editingTransitionClipId) ?? null
+        : null,
+    [editingTransitionClipId, videoClips]
+  );
+
   const timeFromClientX = (clientX: number): number => {
     const el = trackContainerRef.current;
     if (!el) return 0;
@@ -223,16 +259,19 @@ export function TimelinePanel({
     const deltaSec = (e.clientX - op.initialX) / pxPerSecond;
 
     if (op.kind === 'video-trim-left') {
-      const sourceDelta = deltaSec * playbackSpeed;
+      const mult = op.clipKind === 'freeze' ? 1 : playbackSpeed;
+      const sourceDelta = deltaSec * mult;
       const nextStart = Math.max(
         0,
         Math.min(op.origTrimEnd - 0.25, op.origTrimStart + sourceDelta)
       );
       onTrimVideoClip(op.id, nextStart, op.origTrimEnd);
     } else if (op.kind === 'video-trim-right') {
-      const sourceDelta = deltaSec * playbackSpeed;
+      const mult = op.clipKind === 'freeze' ? 1 : playbackSpeed;
+      const sourceDelta = deltaSec * mult;
+      const maxEnd = op.clipKind === 'freeze' ? 30 : op.sourceDuration;
       const nextEnd = Math.min(
-        op.sourceDuration,
+        maxEnd,
         Math.max(op.origTrimStart + 0.25, op.origTrimEnd + sourceDelta)
       );
       onTrimVideoClip(op.id, op.origTrimStart, nextEnd);
@@ -328,12 +367,12 @@ export function TimelinePanel({
   return (
     <section
       aria-label="Multi-Track Timeline"
-      className="h-44 sm:h-48 shrink-0 border-t border-zinc-800/80 bg-[#12151B] flex flex-col select-none"
+      className="h-44 sm:h-48 shrink-0 border-t border-zinc-800/80 bg-[#12151B] flex flex-col select-none relative"
     >
       {/* Compact Timeline Toolbar */}
-      <div className="h-8 shrink-0 border-b border-zinc-800/80 px-3 flex items-center justify-between gap-4 bg-[#101319]">
+      <div className="h-8 shrink-0 border-b border-zinc-800/80 px-3 flex items-center justify-between gap-2 bg-[#101319]">
         <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-semibold text-zinc-200 mr-1.5">
+          <span className="text-[11px] font-semibold text-zinc-200 mr-1">
             Timeline
           </span>
 
@@ -358,6 +397,25 @@ export function TimelinePanel({
 
           <button
             type="button"
+            disabled={!canFreeze}
+            onClick={onFreezeFrame}
+            title={
+              canFreeze
+                ? 'Insert a 3-second freeze frame at the playhead'
+                : 'Move playhead over a video clip to freeze frame'
+            }
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+              canFreeze
+                ? 'border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200'
+                : 'border-zinc-800 bg-zinc-900/50 text-zinc-600 cursor-not-allowed'
+            }`}
+          >
+            <Snowflake className="w-3 h-3" aria-hidden="true" />
+            <span>Freeze</span>
+          </button>
+
+          <button
+            type="button"
             disabled={!selectedItem}
             onClick={onDeleteSelected}
             title={
@@ -375,6 +433,63 @@ export function TimelinePanel({
             <span>Delete</span>
           </button>
         </div>
+
+        {/* Inline Transition Editor if a transition seam was clicked */}
+        {editingTransitionClip && (
+          <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-[#0D1118] px-2 py-0.5 text-[10px]">
+            <span className="text-blue-300 font-medium whitespace-nowrap">
+              Transition:
+            </span>
+            <select
+              aria-label="Clip transition type"
+              value={editingTransitionClip.transitionIn.type}
+              onChange={(e) =>
+                onUpdateClipTransition(editingTransitionClip.id, {
+                  ...editingTransitionClip.transitionIn,
+                  type: e.target.value as TransitionType,
+                })
+              }
+              className="rounded border border-zinc-700 bg-[#090B0E] px-1.5 py-0.5 text-[10px] text-zinc-100"
+            >
+              {TRANSITION_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+
+            {editingTransitionClip.transitionIn.type !== 'none' && (
+              <label className="inline-flex items-center gap-1 text-zinc-300">
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2.0}
+                  step={0.1}
+                  value={editingTransitionClip.transitionIn.duration}
+                  onChange={(e) =>
+                    onUpdateClipTransition(editingTransitionClip.id, {
+                      ...editingTransitionClip.transitionIn,
+                      duration: Number(e.target.value),
+                    })
+                  }
+                  className="w-14 accent-blue-500 cursor-pointer"
+                />
+                <span className="font-mono tabular-nums text-zinc-300">
+                  {editingTransitionClip.transitionIn.duration.toFixed(1)}s
+                </span>
+              </label>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setEditingTransitionClipId(null)}
+              aria-label="Close transition editor"
+              className="p-0.5 text-zinc-400 hover:text-zinc-100"
+            >
+              <X className="w-3 h-3" aria-hidden="true" />
+            </button>
+          </div>
+        )}
 
         <div className="flex items-center gap-3">
           <span className="text-[11px] font-mono tabular-nums text-zinc-300 whitespace-nowrap">
@@ -479,7 +594,7 @@ export function TimelinePanel({
                 }
               }}
             >
-              {/* Track 1: Main Video */}
+              {/* Track 1: Main Video + Freeze Frames + Transition Seams */}
               <div
                 className="border-b border-zinc-800/60 relative flex items-center"
                 onPointerDown={(e) => {
@@ -494,7 +609,7 @@ export function TimelinePanel({
                     Add main videos from Media Upload
                   </span>
                 ) : (
-                  videoSegments.map((seg) => {
+                  videoSegments.map((seg, idx) => {
                     const leftPx = seg.timelineStart * pxPerSecond;
                     const widthPx = Math.max(
                       24,
@@ -503,74 +618,136 @@ export function TimelinePanel({
                     const isSelected =
                       selectedItem?.track === 'video' &&
                       selectedItem.id === seg.clip.id;
+                    const isFreeze = seg.clip.kind === 'freeze';
+                    const hasTransition =
+                      idx > 0 && seg.clip.transitionIn.type !== 'none';
 
                     return (
-                      <div
-                        key={seg.clip.id}
-                        onPointerDown={(e) => {
-                          e.stopPropagation();
-                          onSelectItem({track: 'video', id: seg.clip.id});
-                        }}
-                        style={{left: leftPx, width: widthPx}}
-                        className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'border-blue-400 bg-blue-600/25 ring-1 ring-blue-500/60'
-                            : 'border-blue-500/40 bg-blue-950/40 hover:border-blue-400/70'
-                        }`}
-                      >
+                      <div key={seg.clip.id}>
                         <div
                           onPointerDown={(e) => {
                             e.stopPropagation();
                             onSelectItem({track: 'video', id: seg.clip.id});
-                            dragRef.current = {
-                              kind: 'video-trim-left',
-                              id: seg.clip.id,
-                              initialX: e.clientX,
-                              origTrimStart: seg.clip.trimStart,
-                              origTrimEnd: seg.clip.trimEnd,
-                            };
-                            (
-                              e.currentTarget.closest(
-                                '.overflow-x-auto'
-                              ) as HTMLElement | null
-                            )?.setPointerCapture(e.pointerId);
                           }}
-                          className="w-2 h-full shrink-0 bg-blue-500/40 hover:bg-blue-400 cursor-ew-resize flex items-center justify-center"
+                          style={{left: leftPx, width: widthPx}}
+                          className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center cursor-pointer transition-colors ${
+                            isFreeze
+                              ? isSelected
+                                ? 'border-indigo-400 bg-indigo-500/30 ring-1 ring-indigo-400/60'
+                                : 'border-indigo-500/50 bg-indigo-950/45 hover:border-indigo-400/80'
+                              : isSelected
+                                ? 'border-blue-400 bg-blue-600/25 ring-1 ring-blue-500/60'
+                                : 'border-blue-500/40 bg-blue-950/40 hover:border-blue-400/70'
+                          }`}
                         >
-                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                          <div
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              onSelectItem({track: 'video', id: seg.clip.id});
+                              dragRef.current = {
+                                kind: 'video-trim-left',
+                                id: seg.clip.id,
+                                initialX: e.clientX,
+                                origTrimStart: seg.clip.trimStart,
+                                origTrimEnd: seg.clip.trimEnd,
+                                clipKind: seg.clip.kind,
+                              };
+                              (
+                                e.currentTarget.closest(
+                                  '.overflow-x-auto'
+                                ) as HTMLElement | null
+                              )?.setPointerCapture(e.pointerId);
+                            }}
+                            className={`w-2 h-full shrink-0 cursor-ew-resize flex items-center justify-center ${
+                              isFreeze
+                                ? 'bg-indigo-500/45 hover:bg-indigo-400'
+                                : 'bg-blue-500/40 hover:bg-blue-400'
+                            }`}
+                          >
+                            <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                          </div>
+
+                          <div className="flex-1 min-w-0 px-1.5 flex items-center justify-between gap-1">
+                            <span className="inline-flex items-center gap-1 min-w-0">
+                              {isFreeze && (
+                                <Snowflake
+                                  className="w-2.5 h-2.5 text-indigo-300 shrink-0"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="text-[10px] font-medium text-zinc-100 truncate">
+                                {seg.clip.name}
+                              </span>
+                            </span>
+                            <span className="text-[9px] font-mono tabular-nums text-blue-200/80 shrink-0">
+                              {formatTime(seg.effectiveDuration)}
+                            </span>
+                          </div>
+
+                          <div
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              onSelectItem({track: 'video', id: seg.clip.id});
+                              dragRef.current = {
+                                kind: 'video-trim-right',
+                                id: seg.clip.id,
+                                initialX: e.clientX,
+                                origTrimStart: seg.clip.trimStart,
+                                origTrimEnd: seg.clip.trimEnd,
+                                sourceDuration: seg.clip.sourceDuration,
+                                clipKind: seg.clip.kind,
+                              };
+                              (
+                                e.currentTarget.closest(
+                                  '.overflow-x-auto'
+                                ) as HTMLElement | null
+                              )?.setPointerCapture(e.pointerId);
+                            }}
+                            className={`w-2 h-full shrink-0 cursor-ew-resize flex items-center justify-center ${
+                              isFreeze
+                                ? 'bg-indigo-500/45 hover:bg-indigo-400'
+                                : 'bg-blue-500/40 hover:bg-blue-400'
+                            }`}
+                          >
+                            <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                          </div>
                         </div>
 
-                        <div className="flex-1 min-w-0 px-1.5 flex items-center justify-between gap-1.5">
-                          <span className="text-[10px] font-medium text-zinc-100 truncate">
-                            {seg.clip.name}
-                          </span>
-                          <span className="text-[9px] font-mono tabular-nums text-blue-200/80 shrink-0">
-                            {formatTime(seg.effectiveDuration)}
-                          </span>
-                        </div>
-
-                        <div
-                          onPointerDown={(e) => {
-                            e.stopPropagation();
-                            onSelectItem({track: 'video', id: seg.clip.id});
-                            dragRef.current = {
-                              kind: 'video-trim-right',
-                              id: seg.clip.id,
-                              initialX: e.clientX,
-                              origTrimStart: seg.clip.trimStart,
-                              origTrimEnd: seg.clip.trimEnd,
-                              sourceDuration: seg.clip.sourceDuration,
-                            };
-                            (
-                              e.currentTarget.closest(
-                                '.overflow-x-auto'
-                              ) as HTMLElement | null
-                            )?.setPointerCapture(e.pointerId);
-                          }}
-                          className="w-2 h-full shrink-0 bg-blue-500/40 hover:bg-blue-400 cursor-ew-resize flex items-center justify-center"
-                        >
-                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
-                        </div>
+                        {/* Transition Button on the seam between clip[i-1] and clip[i] */}
+                        {idx > 0 && (
+                          <button
+                            type="button"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingTransitionClipId((prev) =>
+                                prev === seg.clip.id ? null : seg.clip.id
+                              );
+                            }}
+                            title={
+                              hasTransition
+                                ? `Transition: ${seg.clip.transitionIn.type} (${seg.clip.transitionIn.duration.toFixed(1)}s)`
+                                : 'Add clip transition'
+                            }
+                            style={{
+                              left:
+                                (seg.timelineStart +
+                                  seg.effectiveTransitionIn / 2) *
+                                pxPerSecond,
+                            }}
+                            className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-10 w-5 h-5 rounded-full border flex items-center justify-center transition-colors ${
+                              hasTransition ||
+                              editingTransitionClipId === seg.clip.id
+                                ? 'bg-blue-600 border-blue-300 text-white shadow-md'
+                                : 'bg-[#171B22] border-zinc-600 text-zinc-300 hover:border-blue-400 hover:text-white'
+                            }`}
+                          >
+                            <ArrowLeftRight
+                              className="w-2.5 h-2.5"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        )}
                       </div>
                     );
                   })
@@ -774,6 +951,7 @@ export function TimelinePanel({
                               kind: 'audio-trim-right',
                               id: ac.id,
                               initialX: e.clientX,
+                              origStartTime: ac.startTime,
                               origTrimStart: ac.trimStart,
                               origTrimEnd: ac.trimEnd,
                               sourceDuration: ac.sourceDuration,

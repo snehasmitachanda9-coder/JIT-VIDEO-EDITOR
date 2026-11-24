@@ -2,6 +2,7 @@ import type {
   AspectRatioPreset,
   AudioSettings,
   BackgroundRemovalConfig,
+  MotionTransform,
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
@@ -18,8 +19,8 @@ import {
 import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
-  findActiveVideoSegment,
   getAudioClipDuration,
+  resolveVideoStateAtTime,
 } from './timelineMath';
 
 export interface ExportVideoOptions {
@@ -30,6 +31,7 @@ export interface ExportVideoOptions {
   aspectRatio: AspectRatioPreset;
   fitMode: VideoFitMode;
   filters: VideoFilters;
+  motionTransform: MotionTransform;
   mainBgRemoval: BackgroundRemovalConfig;
   audioSettings: AudioSettings;
   onProgress: (percent: number, phase: string) => void;
@@ -127,6 +129,7 @@ export async function exportEditedVideo(
     aspectRatio,
     fitMode,
     filters,
+    motionTransform,
     mainBgRemoval,
     audioSettings,
     onProgress,
@@ -164,7 +167,7 @@ export async function exportEditedVideo(
   const audioCtx = new AudioContext();
   const destination = audioCtx.createMediaStreamDestination();
 
-  // Main video element
+  // Primary & Outgoing video elements for seamless transitions
   const mainVideoEl = document.createElement('video');
   mainVideoEl.crossOrigin = 'anonymous';
   mainVideoEl.playsInline = true;
@@ -178,6 +181,26 @@ export async function exportEditedVideo(
   mainVideoGain.gain.value = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
   mainVideoSource.connect(mainVideoGain);
   mainVideoGain.connect(destination);
+
+  const outgoingVideoEl = document.createElement('video');
+  outgoingVideoEl.crossOrigin = 'anonymous';
+  outgoingVideoEl.playsInline = true;
+  outgoingVideoEl.preload = 'auto';
+  outgoingVideoEl.muted = true;
+  outgoingVideoEl.playbackRate = audioSettings.playbackSpeed;
+
+  // Preload freeze frame images
+  const freezeImageMap = new Map<string, HTMLImageElement>();
+  for (const clip of videoClips) {
+    if (clip.kind === 'freeze') {
+      try {
+        const img = await waitForImage(clip.url);
+        freezeImageMap.set(clip.id, img);
+      } catch {
+        // skip
+      }
+    }
+  }
 
   // Background music audio element
   let musicEl: HTMLAudioElement | null = null;
@@ -228,7 +251,7 @@ export async function exportEditedVideo(
         const img = await waitForImage(layer.url);
         overlayElementsMap.set(layer.id, img);
       } catch {
-        // Skip broken image cleanly
+        // skip
       }
     } else {
       const vid = document.createElement('video');
@@ -267,13 +290,15 @@ export async function exportEditedVideo(
   };
 
   const cleanup = () => {
-    try {
-      mainVideoEl.pause();
-      mainVideoEl.removeAttribute('src');
-      mainVideoEl.load();
-    } catch {
-      // ignore
-    }
+    [mainVideoEl, outgoingVideoEl, ...overlayVideoElements].forEach((v) => {
+      try {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        // ignore
+      }
+    });
     if (musicEl) {
       try {
         musicEl.pause();
@@ -292,15 +317,6 @@ export async function exportEditedVideo(
         // ignore
       }
     }
-    overlayVideoElements.forEach((v) => {
-      try {
-        v.pause();
-        v.removeAttribute('src');
-        v.load();
-      } catch {
-        // ignore
-      }
-    });
     combinedStream.getTracks().forEach((t) => t.stop());
     void audioCtx.close().catch(() => {});
   };
@@ -323,6 +339,7 @@ export async function exportEditedVideo(
     const frameIntervalMs = 1000 / fps;
     let currentTimelineTime = 0;
     let activeMainClipUrl: string | null = null;
+    let activeOutgoingUrl: string | null = null;
     let activeMusicClipId: string | null = null;
 
     if (bgReplacementEl instanceof HTMLVideoElement) {
@@ -335,35 +352,75 @@ export async function exportEditedVideo(
       }
 
       const frameStartMs = performance.now();
-      const seg = findActiveVideoSegment(segments, currentTimelineTime);
+      const videoState = resolveVideoStateAtTime(segments, currentTimelineTime);
+      const seg = videoState.primary;
+      const outSeg = videoState.outgoing;
 
+      let primarySource: MediaSourceElement | null = null;
       if (seg) {
-        const expectedSrcTime =
-          seg.clip.trimStart +
-          Math.max(0, currentTimelineTime - seg.timelineStart) *
-            audioSettings.playbackSpeed;
-
-        if (activeMainClipUrl !== seg.clip.url) {
-          activeMainClipUrl = seg.clip.url;
-          mainVideoEl.src = seg.clip.url;
-          await waitForVideoReady(mainVideoEl);
-          mainVideoEl.playbackRate = audioSettings.playbackSpeed;
-          await seekMedia(mainVideoEl, expectedSrcTime);
-          if (!hasAiSegmentation) {
-            void mainVideoEl.play().catch(() => {});
-          }
-        } else if (hasAiSegmentation) {
-          await seekMedia(mainVideoEl, expectedSrcTime);
+        if (seg.clip.kind === 'freeze') {
+          primarySource = freezeImageMap.get(seg.clip.id) ?? null;
+          if (!mainVideoEl.paused) mainVideoEl.pause();
         } else {
-          if (mainVideoEl.paused && !mainVideoEl.ended) {
-            void mainVideoEl.play().catch(() => {});
-          }
-          if (Math.abs(mainVideoEl.currentTime - expectedSrcTime) > 0.2) {
+          const expectedSrcTime =
+            seg.clip.trimStart +
+            Math.max(0, currentTimelineTime - seg.timelineStart) *
+              audioSettings.playbackSpeed;
+
+          if (activeMainClipUrl !== seg.clip.url) {
+            activeMainClipUrl = seg.clip.url;
+            mainVideoEl.src = seg.clip.url;
+            await waitForVideoReady(mainVideoEl);
+            mainVideoEl.playbackRate = audioSettings.playbackSpeed;
             await seekMedia(mainVideoEl, expectedSrcTime);
+            if (!hasAiSegmentation) {
+              void mainVideoEl.play().catch(() => {});
+            }
+          } else if (hasAiSegmentation) {
+            await seekMedia(mainVideoEl, expectedSrcTime);
+          } else {
+            if (mainVideoEl.paused && !mainVideoEl.ended) {
+              void mainVideoEl.play().catch(() => {});
+            }
+            if (Math.abs(mainVideoEl.currentTime - expectedSrcTime) > 0.2) {
+              await seekMedia(mainVideoEl, expectedSrcTime);
+            }
           }
+          primarySource = mainVideoEl;
         }
       } else if (!mainVideoEl.paused) {
         mainVideoEl.pause();
+      }
+
+      let outgoingSource: MediaSourceElement | null = null;
+      if (outSeg) {
+        if (outSeg.clip.kind === 'freeze') {
+          outgoingSource = freezeImageMap.get(outSeg.clip.id) ?? null;
+        } else {
+          const expectedOutTime =
+            outSeg.clip.trimStart +
+            Math.max(0, currentTimelineTime - outSeg.timelineStart) *
+              audioSettings.playbackSpeed;
+
+          if (activeOutgoingUrl !== outSeg.clip.url) {
+            activeOutgoingUrl = outSeg.clip.url;
+            outgoingVideoEl.src = outSeg.clip.url;
+            await waitForVideoReady(outgoingVideoEl);
+            outgoingVideoEl.playbackRate = audioSettings.playbackSpeed;
+            await seekMedia(outgoingVideoEl, expectedOutTime);
+            if (!hasAiSegmentation) {
+              void outgoingVideoEl.play().catch(() => {});
+            }
+          } else if (
+            hasAiSegmentation ||
+            Math.abs(outgoingVideoEl.currentTime - expectedOutTime) > 0.2
+          ) {
+            await seekMedia(outgoingVideoEl, expectedOutTime);
+          }
+          outgoingSource = outgoingVideoEl;
+        }
+      } else if (!outgoingVideoEl.paused) {
+        outgoingVideoEl.pause();
       }
 
       // Sync overlay videos
@@ -424,10 +481,9 @@ export async function exportEditedVideo(
         }
       }
 
-      // Compute frame-accurate AI segmentation masks if enabled
       let mainMask: HTMLCanvasElement | null | undefined = undefined;
-      if (seg && mainBgRemoval.mode === 'ai-person') {
-        mainMask = await segmentFrameForExport('main', mainVideoEl);
+      if (primarySource && mainBgRemoval.mode === 'ai-person') {
+        mainMask = await segmentFrameForExport('main', primarySource);
       }
 
       const overlayMasks = new Map<string, HTMLCanvasElement | null>();
@@ -445,14 +501,28 @@ export async function exportEditedVideo(
         }
       }
 
+      const primaryClipProgress =
+        seg && seg.effectiveDuration > 0
+          ? (currentTimelineTime - seg.timelineStart) / seg.effectiveDuration
+          : 0;
+      const outgoingClipProgress =
+        outSeg && outSeg.effectiveDuration > 0
+          ? (currentTimelineTime - outSeg.timelineStart) / outSeg.effectiveDuration
+          : 1;
+
       renderEditorFrame({
         ctx,
         canvasWidth: dims.width,
         canvasHeight: dims.height,
-        video: mainVideoEl,
-        hasActiveVideo: Boolean(seg),
+        primarySource,
+        primaryClipProgress,
+        outgoingSource,
+        outgoingClipProgress,
+        transition: videoState.transition,
+        transitionProgress: videoState.transitionProgress,
         fitMode,
         filters,
+        motionTransform,
         mainBgRemoval,
         mainBgReplacementEl: bgReplacementEl,
         precomputedMainMask: mainMask,
@@ -469,9 +539,8 @@ export async function exportEditedVideo(
         98,
         Math.max(5, Math.round((currentTimelineTime / totalDuration) * 93) + 5)
       );
-      onProgress(pct, 'Rendering video, layers & audio...');
+      onProgress(pct, 'Rendering effects, transitions & audio...');
 
-      // Advance timeline clock in real-time pacing so MediaRecorder captures accurate timestamps
       const elapsedMs = performance.now() - frameStartMs;
       const waitMs = Math.max(4, frameIntervalMs - elapsedMs);
       await new Promise((r) => setTimeout(r, waitMs));
@@ -489,6 +558,7 @@ export async function exportEditedVideo(
 
     onProgress(99, 'Finalizing video file...');
     mainVideoEl.pause();
+    outgoingVideoEl.pause();
     if (musicEl && !musicEl.paused) musicEl.pause();
     if (recorder.state !== 'inactive') recorder.stop();
 

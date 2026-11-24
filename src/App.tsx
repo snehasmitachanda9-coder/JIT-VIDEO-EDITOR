@@ -7,13 +7,16 @@ import {RightEditorPanel} from './components/RightEditorPanel';
 import {TimelinePanel} from './components/TimelinePanel';
 import {
   DEFAULT_BG_REMOVAL,
+  DEFAULT_MOTION_TRANSFORM,
   type AIStudioCaption,
   type AspectRatioPreset,
   type AudioAsset,
   type AudioSettings,
   type BackgroundRemovalConfig,
+  type ClipTransition,
   type FilterPreset,
   type MediaAsset,
+  type MotionTransform,
   type OverlayLayerItem,
   type RightPanelTab,
   type SelectedTimelineItem,
@@ -30,6 +33,7 @@ import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
   extractAudioDuration,
+  resolveVideoStateAtTime,
 } from './utils/timelineMath';
 import {
   extractImageMetadata,
@@ -80,6 +84,9 @@ const DEFAULT_FILTERS: VideoFilters = {
   contrast: 100,
   saturation: 100,
   blur: 0,
+  hueRotate: 0,
+  vignette: 0,
+  sharpen: 0,
   preset: 'none',
 };
 
@@ -89,6 +96,11 @@ const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   musicVolume: 0.7,
   musicMuted: false,
   playbackSpeed: 1,
+};
+
+const DEFAULT_TRANSITION: ClipTransition = {
+  type: 'none',
+  duration: 0.8,
 };
 
 export default function App() {
@@ -113,6 +125,9 @@ export default function App() {
   const [aspectRatio, setAspectRatio] = useState<AspectRatioPreset>('16:9');
   const [fitMode, setFitMode] = useState<VideoFitMode>('contain');
   const [filters, setFilters] = useState<VideoFilters>(DEFAULT_FILTERS);
+  const [motionTransform, setMotionTransform] = useState<MotionTransform>(
+    DEFAULT_MOTION_TRANSFORM
+  );
   const [mainBgRemoval, setMainBgRemoval] = useState<BackgroundRemovalConfig>({
     ...DEFAULT_BG_REMOVAL,
   });
@@ -124,7 +139,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Right Inspector Tab
-  const [activeRightTab, setActiveRightTab] = useState<RightPanelTab>('text');
+  const [activeRightTab, setActiveRightTab] = useState<RightPanelTab>('motion');
 
   // Export Modal State
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -139,6 +154,7 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const captureRawFrameRef = useRef<(() => string | null) | null>(null);
   const urlsRef = useRef<Set<string>>(new Set());
   const exportAbortRef = useRef<AbortController | null>(null);
 
@@ -150,7 +166,6 @@ export default function App() {
     };
   }, []);
 
-  // Escape exits Full Preview mode
   useEffect(() => {
     if (!isFullPreview) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -256,13 +271,13 @@ export default function App() {
 
       setMediaAssets((prev) => [...prev, ...newAssets]);
 
-      // Auto-add first uploaded video(s) to Main Video track if empty
       const videoAssets = newAssets.filter((a) => a.kind === 'video');
       if (videoAssets.length > 0) {
         setVideoClips((prev) => {
           if (prev.length > 0) return prev;
           const appended: TimelineVideoClip[] = videoAssets.map((a) => ({
             id: makeId('vclip'),
+            kind: 'video',
             assetId: a.id,
             name: a.name,
             url: a.url,
@@ -270,6 +285,7 @@ export default function App() {
             sourceDuration: a.duration,
             trimStart: 0,
             trimEnd: a.duration,
+            transitionIn: {...DEFAULT_TRANSITION},
           }));
           if (appended[0]) {
             setSelectedItem({track: 'video', id: appended[0].id});
@@ -285,6 +301,7 @@ export default function App() {
     if (asset.kind !== 'video') return;
     const newClip: TimelineVideoClip = {
       id: makeId('vclip'),
+      kind: 'video',
       assetId: asset.id,
       name: asset.name,
       url: asset.url,
@@ -292,6 +309,7 @@ export default function App() {
       sourceDuration: asset.duration,
       trimStart: 0,
       trimEnd: asset.duration,
+      transitionIn: {...DEFAULT_TRANSITION},
     };
     setVideoClips((prev) => [...prev, newClip]);
     setSelectedItem({track: 'video', id: newClip.id});
@@ -300,8 +318,7 @@ export default function App() {
   const handleAddOverlayToTimeline = useCallback(
     (asset: MediaAsset) => {
       const start = Math.max(0, Number(currentTime.toFixed(2)));
-      const dur =
-        asset.kind === 'video' ? Math.max(1, asset.duration) : 4;
+      const dur = asset.kind === 'video' ? Math.max(1, asset.duration) : 4;
       const naturalAspect =
         asset.width > 0 && asset.height > 0 ? asset.width / asset.height : 1;
 
@@ -355,6 +372,78 @@ export default function App() {
       }
     },
     [mainBgRemoval.replacementAssetId]
+  );
+
+  // Freeze Frame Insertion (3-second still image segment at playhead)
+  const handleFreezeFrame = useCallback(() => {
+    const captureFn = captureRawFrameRef.current;
+    if (!captureFn) return;
+    const dataUrl = captureFn();
+    if (!dataUrl) return;
+
+    const segments = computeVideoTimelineSegments(
+      videoClips,
+      audioSettings.playbackSpeed
+    );
+    const activeState = resolveVideoStateAtTime(segments, currentTime);
+    const seg = activeState.primary;
+    if (!seg) return;
+
+    const freezeClip: TimelineVideoClip = {
+      id: makeId('freeze'),
+      kind: 'freeze',
+      assetId: seg.clip.assetId,
+      name: `Freeze · ${seg.clip.name}`,
+      url: dataUrl,
+      thumbnailUrl: dataUrl,
+      sourceDuration: 30,
+      trimStart: 0,
+      trimEnd: 3,
+      transitionIn: {...DEFAULT_TRANSITION},
+    };
+
+    const elapsedInSeg = currentTime - seg.timelineStart;
+    const isNearStart = elapsedInSeg <= 0.15;
+    const isNearEnd = seg.timelineEnd - currentTime <= 0.15;
+
+    setVideoClips((prev) => {
+      const idx = prev.findIndex((c) => c.id === seg.clip.id);
+      if (idx === -1) return prev;
+      const copy = [...prev];
+
+      if (isNearStart) {
+        copy.splice(idx, 0, freezeClip);
+      } else if (isNearEnd) {
+        copy.splice(idx + 1, 0, freezeClip);
+      } else {
+        const mult = seg.clip.kind === 'freeze' ? 1 : audioSettings.playbackSpeed;
+        const splitSource = seg.clip.trimStart + elapsedInSeg * mult;
+        const firstHalf: TimelineVideoClip = {
+          ...seg.clip,
+          trimEnd: splitSource,
+        };
+        const secondHalf: TimelineVideoClip = {
+          ...seg.clip,
+          id: makeId('vclip'),
+          trimStart: splitSource,
+          transitionIn: {...DEFAULT_TRANSITION},
+        };
+        copy.splice(idx, 1, firstHalf, freezeClip, secondHalf);
+      }
+      return copy;
+    });
+
+    setIsPlaying(false);
+    setSelectedItem({track: 'video', id: freezeClip.id});
+  }, [videoClips, audioSettings.playbackSpeed, currentTime]);
+
+  const handleUpdateClipTransition = useCallback(
+    (clipId: string, transition: ClipTransition) => {
+      setVideoClips((prev) =>
+        prev.map((c) => (c.id === clipId ? {...c, transitionIn: transition} : c))
+      );
+    },
+    []
   );
 
   // Overlay PIP Management
@@ -625,9 +714,9 @@ export default function App() {
         return;
       }
 
+      const mult = seg.clip.kind === 'freeze' ? 1 : audioSettings.playbackSpeed;
       const splitSourceTime =
-        seg.clip.trimStart +
-        (currentTime - seg.timelineStart) * audioSettings.playbackSpeed;
+        seg.clip.trimStart + (currentTime - seg.timelineStart) * mult;
 
       const firstHalf: TimelineVideoClip = {
         ...seg.clip,
@@ -635,8 +724,9 @@ export default function App() {
       };
       const secondHalf: TimelineVideoClip = {
         ...seg.clip,
-        id: makeId('vclip'),
+        id: makeId(seg.clip.kind === 'freeze' ? 'freeze' : 'vclip'),
         trimStart: splitSourceTime,
+        transitionIn: {...DEFAULT_TRANSITION},
       };
 
       setVideoClips((prev) => {
@@ -751,7 +841,14 @@ export default function App() {
   const handleDeleteSelected = useCallback(() => {
     if (!selectedItem) return;
     if (selectedItem.track === 'video') {
-      setVideoClips((prev) => prev.filter((c) => c.id !== selectedItem.id));
+      setVideoClips((prev) => {
+        const filtered = prev.filter((c) => c.id !== selectedItem.id);
+        // Ensure first clip has no incoming transition
+        if (filtered.length > 0 && filtered[0].transitionIn.type !== 'none') {
+          filtered[0] = {...filtered[0], transitionIn: {...DEFAULT_TRANSITION}};
+        }
+        return filtered;
+      });
     } else if (selectedItem.track === 'overlay') {
       clearMaskCache(`overlay-${selectedItem.id}`);
       setOverlayLayers((prev) => prev.filter((o) => o.id !== selectedItem.id));
@@ -784,7 +881,7 @@ export default function App() {
     []
   );
 
-  // Filters
+  // Filters & Motion
   const handleUpdateFilters = useCallback((patch: Partial<VideoFilters>) => {
     setFilters((prev) => ({...prev, ...patch}));
   }, []);
@@ -798,7 +895,17 @@ export default function App() {
     setFilters(DEFAULT_FILTERS);
   }, []);
 
-  // Capture canvas snapshot for Gemini AI Studio visual context
+  const handleUpdateMotionTransform = useCallback(
+    (patch: Partial<MotionTransform>) => {
+      setMotionTransform((prev) => ({...prev, ...patch}));
+    },
+    []
+  );
+
+  const handleResetMotionTransform = useCallback(() => {
+    setMotionTransform(DEFAULT_MOTION_TRANSFORM);
+  }, []);
+
   const handleCaptureFrameDataUrl = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || (videoClips.length === 0 && overlayLayers.length === 0)) {
@@ -844,6 +951,7 @@ export default function App() {
         aspectRatio,
         fitMode,
         filters,
+        motionTransform,
         mainBgRemoval,
         audioSettings,
         onProgress: (pct, phase) => {
@@ -887,6 +995,7 @@ export default function App() {
     aspectRatio,
     fitMode,
     filters,
+    motionTransform,
     mainBgRemoval,
     audioSettings,
     isExporting,
@@ -935,6 +1044,7 @@ export default function App() {
           aspectRatio={aspectRatio}
           fitMode={fitMode}
           filters={filters}
+          motionTransform={motionTransform}
           mainBgRemoval={mainBgRemoval}
           audioSettings={audioSettings}
           currentTime={currentTime}
@@ -954,6 +1064,7 @@ export default function App() {
           onMoveTextOverlay={handleMoveTextOverlay}
           onOpenUpload={() => fileInputRef.current?.click()}
           canvasRef={canvasRef}
+          captureRawFrameRef={captureRawFrameRef}
         />
 
         {!isFullPreview && (
@@ -962,14 +1073,9 @@ export default function App() {
             onToggleCollapse={() => setRightCollapsed((c) => !c)}
             activeTab={activeRightTab}
             onTabChange={setActiveRightTab}
-            textOverlays={textOverlays}
-            selectedTextId={selectedTextId}
-            totalDuration={totalDuration}
-            currentTime={currentTime}
-            onAddTextOverlay={handleAddTextOverlay}
-            onSelectTextOverlay={handleSelectTextOverlay}
-            onUpdateTextOverlay={handleUpdateTextOverlay}
-            onDeleteTextOverlay={handleDeleteTextOverlay}
+            motionTransform={motionTransform}
+            onUpdateMotionTransform={handleUpdateMotionTransform}
+            onResetMotionTransform={handleResetMotionTransform}
             filters={filters}
             onUpdateFilters={handleUpdateFilters}
             onApplyFilterPreset={handleApplyFilterPreset}
@@ -982,6 +1088,14 @@ export default function App() {
             onUpdateMainBgRemoval={handleUpdateMainBgRemoval}
             onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
             onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
+            textOverlays={textOverlays}
+            selectedTextId={selectedTextId}
+            totalDuration={totalDuration}
+            currentTime={currentTime}
+            onAddTextOverlay={handleAddTextOverlay}
+            onSelectTextOverlay={handleSelectTextOverlay}
+            onUpdateTextOverlay={handleUpdateTextOverlay}
+            onDeleteTextOverlay={handleDeleteTextOverlay}
             audioAssets={audioAssets}
             audioSettings={audioSettings}
             onUploadAudioFiles={handleUploadAudioFiles}
@@ -1021,8 +1135,10 @@ export default function App() {
             setCurrentTime(time);
           }}
           onSplitSelected={handleSplitSelected}
+          onFreezeFrame={handleFreezeFrame}
           onDeleteSelected={handleDeleteSelected}
           onTrimVideoClip={handleTrimVideoClip}
+          onUpdateClipTransition={handleUpdateClipTransition}
           onUpdateOverlay={handleUpdateOverlay}
           onUpdateAudioClip={handleUpdateAudioClip}
           onUpdateTextOverlay={handleUpdateTextOverlay}

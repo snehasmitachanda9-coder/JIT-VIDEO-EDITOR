@@ -23,6 +23,7 @@ import type {
   AspectRatioPreset,
   AudioSettings,
   BackgroundRemovalConfig,
+  MotionTransform,
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
@@ -32,6 +33,7 @@ import type {
 } from '../types/editor';
 import {
   ASPECT_RATIO_DIMENSIONS,
+  isMediaReady,
   renderEditorFrame,
   type MediaSourceElement,
   type OverlayLayerBounds,
@@ -40,8 +42,9 @@ import {
 import {formatTime} from '../utils/formatTime';
 import {
   computeVideoTimelineSegments,
-  findActiveVideoSegment,
   getAudioClipDuration,
+  resolveVideoStateAtTime,
+  type ComputedVideoSegment,
 } from '../utils/timelineMath';
 
 interface PreviewCanvasPlayerProps {
@@ -54,6 +57,7 @@ interface PreviewCanvasPlayerProps {
   aspectRatio: AspectRatioPreset;
   fitMode: VideoFitMode;
   filters: VideoFilters;
+  motionTransform: MotionTransform;
   mainBgRemoval: BackgroundRemovalConfig;
   audioSettings: AudioSettings;
   currentTime: number;
@@ -73,6 +77,7 @@ interface PreviewCanvasPlayerProps {
   onMoveTextOverlay: (id: string, x: number, y: number) => void;
   onOpenUpload: () => void;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  captureRawFrameRef: React.MutableRefObject<(() => string | null) | null>;
 }
 
 const ASPECT_OPTIONS: Array<{
@@ -114,6 +119,7 @@ export function PreviewCanvasPlayer({
   aspectRatio,
   fitMode,
   filters,
+  motionTransform,
   mainBgRemoval,
   audioSettings,
   currentTime,
@@ -133,11 +139,14 @@ export function PreviewCanvasPlayer({
   onMoveTextOverlay,
   onOpenUpload,
   canvasRef,
+  captureRawFrameRef,
 }: PreviewCanvasPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRefA = useRef<HTMLVideoElement | null>(null);
+  const videoRefB = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
+  const freezeImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const overlayElementsRef = useRef<Map<string, MediaSourceElement>>(new Map());
   const bgReplacementElRef = useRef<MediaSourceElement | null>(null);
   const textBoundsRef = useRef<TextOverlayBounds[]>([]);
@@ -157,8 +166,8 @@ export function PreviewCanvasPlayer({
     [videoClips, audioSettings.playbackSpeed]
   );
 
-  const activeSegment = useMemo(
-    () => findActiveVideoSegment(videoSegments, currentTime),
+  const activeState = useMemo(
+    () => resolveVideoStateAtTime(videoSegments, currentTime),
     [videoSegments, currentTime]
   );
 
@@ -193,7 +202,25 @@ export function PreviewCanvasPlayer({
     return () => observer.disconnect();
   }, [targetDims.width, targetDims.height, isFullPreview]);
 
-  // Manage DOM media elements for all Overlay / PIP layers
+  // Preload freeze-frame HTMLImageElements
+  useEffect(() => {
+    const map = freezeImagesRef.current;
+    const activeIds = new Set(
+      videoClips.filter((c) => c.kind === 'freeze').map((c) => c.id)
+    );
+    for (const id of map.keys()) {
+      if (!activeIds.has(id)) map.delete(id);
+    }
+    for (const clip of videoClips) {
+      if (clip.kind !== 'freeze' || map.has(clip.id)) continue;
+      const img = new Image();
+      img.onload = () => setRenderTick((t) => t + 1);
+      img.src = clip.url;
+      map.set(clip.id, img);
+    }
+  }, [videoClips]);
+
+  // Manage DOM media elements for Overlay / PIP layers
   useEffect(() => {
     const map = overlayElementsRef.current;
     const activeIds = new Set(overlayLayers.map((l) => l.id));
@@ -231,7 +258,7 @@ export function PreviewCanvasPlayer({
     }
   }, [overlayLayers]);
 
-  // Manage custom background replacement image/video element
+  // Manage custom BG replacement asset
   useEffect(() => {
     const prev = bgReplacementElRef.current;
     if (prev instanceof HTMLVideoElement) {
@@ -272,13 +299,19 @@ export function PreviewCanvasPlayer({
     mainBgRemoval.replacementAssetUrl,
   ]);
 
-  // Keep volume & playback rate updated
+  // Volume & playback rate
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = audioSettings.videoMuted;
-    video.volume = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
-    video.playbackRate = audioSettings.playbackSpeed;
+    const videoA = videoRefA.current;
+    const videoB = videoRefB.current;
+    if (videoA) {
+      videoA.muted = audioSettings.videoMuted;
+      videoA.volume = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
+      videoA.playbackRate = audioSettings.playbackSpeed;
+    }
+    if (videoB) {
+      videoB.muted = true;
+      videoB.playbackRate = audioSettings.playbackSpeed;
+    }
   }, [
     audioSettings.videoMuted,
     audioSettings.videoVolume,
@@ -292,6 +325,50 @@ export function PreviewCanvasPlayer({
     audio.volume = audioSettings.musicMuted ? 0 : audioSettings.musicVolume;
   }, [audioSettings.musicMuted, audioSettings.musicVolume]);
 
+  // Expose raw active video/freeze frame capture for Freeze Frame button
+  useEffect(() => {
+    captureRawFrameRef.current = () => {
+      const seg = activeState.primary;
+      if (!seg) return null;
+      const src: MediaSourceElement | null =
+        seg.clip.kind === 'freeze'
+          ? freezeImagesRef.current.get(seg.clip.id) ?? null
+          : videoRefA.current;
+      if (!src || !isMediaReady(src)) return null;
+
+      const w =
+        src instanceof HTMLVideoElement ? src.videoWidth : src.naturalWidth;
+      const h =
+        src instanceof HTMLVideoElement ? src.videoHeight : src.naturalHeight;
+      if (w <= 0 || h <= 0) return null;
+
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      if (!octx) return null;
+      octx.drawImage(src, 0, 0, w, h);
+      return off.toDataURL('image/png');
+    };
+    return () => {
+      captureRawFrameRef.current = null;
+    };
+  }, [activeState.primary, captureRawFrameRef]);
+
+  const resolveSegmentSource = useCallback(
+    (
+      seg: ComputedVideoSegment | null,
+      videoEl: HTMLVideoElement | null
+    ): MediaSourceElement | null => {
+      if (!seg) return null;
+      if (seg.clip.kind === 'freeze') {
+        return freezeImagesRef.current.get(seg.clip.id) ?? null;
+      }
+      return videoEl;
+    },
+    []
+  );
+
   const drawCurrentFrame = useCallback(
     (timeToDraw: number) => {
       const canvas = canvasRef.current;
@@ -299,15 +376,40 @@ export function PreviewCanvasPlayer({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const seg = findActiveVideoSegment(videoSegments, timeToDraw);
+      const state = resolveVideoStateAtTime(videoSegments, timeToDraw);
+      const primarySource = resolveSegmentSource(
+        state.primary,
+        videoRefA.current
+      );
+      const outgoingSource = resolveSegmentSource(
+        state.outgoing,
+        videoRefB.current
+      );
+
+      const primaryClipProgress =
+        state.primary && state.primary.effectiveDuration > 0
+          ? (timeToDraw - state.primary.timelineStart) /
+            state.primary.effectiveDuration
+          : 0;
+      const outgoingClipProgress =
+        state.outgoing && state.outgoing.effectiveDuration > 0
+          ? (timeToDraw - state.outgoing.timelineStart) /
+            state.outgoing.effectiveDuration
+          : 1;
+
       const result = renderEditorFrame({
         ctx,
         canvasWidth: targetDims.width,
         canvasHeight: targetDims.height,
-        video: videoRef.current,
-        hasActiveVideo: Boolean(seg),
+        primarySource,
+        primaryClipProgress,
+        outgoingSource,
+        outgoingClipProgress,
+        transition: state.transition,
+        transitionProgress: state.transitionProgress,
         fitMode,
         filters,
+        motionTransform,
         mainBgRemoval,
         mainBgReplacementEl: bgReplacementElRef.current,
         overlayLayers,
@@ -325,10 +427,12 @@ export function PreviewCanvasPlayer({
     [
       canvasRef,
       videoSegments,
+      resolveSegmentSource,
       targetDims.width,
       targetDims.height,
       fitMode,
       filters,
+      motionTransform,
       mainBgRemoval,
       overlayLayers,
       textOverlays,
@@ -338,7 +442,6 @@ export function PreviewCanvasPlayer({
     ]
   );
 
-  // Sync overlay videos when paused or playing
   const syncOverlayVideos = useCallback(
     (timelineTime: number, playing: boolean) => {
       for (const layer of overlayLayers) {
@@ -395,72 +498,97 @@ export function PreviewCanvasPlayer({
     [overlayLayers]
   );
 
-  // Sync hidden main <video> source & seek position
-  const activeClipUrl = activeSegment?.clip.url ?? null;
-  const activeClipId = activeSegment?.clip.id ?? null;
+  const syncVideoElementToSegment = useCallback(
+    (
+      videoEl: HTMLVideoElement | null,
+      seg: ComputedVideoSegment | null,
+      timelineTime: number,
+      playing: boolean
+    ) => {
+      if (!videoEl) return;
+      if (!seg || seg.clip.kind === 'freeze') {
+        if (!videoEl.paused) videoEl.pause();
+        if (!seg && videoEl.getAttribute('src')) {
+          videoEl.removeAttribute('src');
+          videoEl.removeAttribute('data-clip-url');
+          videoEl.load();
+        }
+        return;
+      }
 
+      const expectedSourceTime =
+        seg.clip.trimStart +
+        Math.max(0, timelineTime - seg.timelineStart) *
+          audioSettings.playbackSpeed;
+      const currentSrcAttr = videoEl.getAttribute('data-clip-url');
+
+      if (currentSrcAttr !== seg.clip.url) {
+        videoEl.setAttribute('data-clip-url', seg.clip.url);
+        videoEl.src = seg.clip.url;
+        videoEl.playbackRate = audioSettings.playbackSpeed;
+        const onReady = () => {
+          try {
+            videoEl.currentTime = Math.min(
+              seg.clip.trimEnd,
+              Math.max(seg.clip.trimStart, expectedSourceTime)
+            );
+          } catch {
+            // ignore
+          }
+          if (playing) {
+            void videoEl.play().catch(() => {});
+          }
+        };
+        videoEl.addEventListener('loadedmetadata', onReady, {once: true});
+      } else if (!playing) {
+        if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.05) {
+          try {
+            videoEl.currentTime = Math.min(
+              seg.clip.trimEnd,
+              Math.max(seg.clip.trimStart, expectedSourceTime)
+            );
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        if (videoEl.paused && !videoEl.ended) {
+          if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.15) {
+            videoEl.currentTime = expectedSourceTime;
+          }
+          void videoEl.play().catch(() => {});
+        }
+      }
+    },
+    [audioSettings.playbackSpeed]
+  );
+
+  // Sync primary and outgoing video elements when paused or seeking
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (!activeSegment || !activeClipUrl) {
-      video.pause();
-      if (video.getAttribute('src')) {
-        video.removeAttribute('src');
-        video.load();
-      }
-      syncOverlayVideos(currentTime, isPlaying);
-      drawCurrentFrame(currentTime);
-      return;
-    }
-
-    const expectedSourceTime =
-      activeSegment.clip.trimStart +
-      Math.max(0, currentTime - activeSegment.timelineStart) *
-        audioSettings.playbackSpeed;
-
-    const currentSrcAttr = video.getAttribute('data-clip-url');
-    if (currentSrcAttr !== activeClipUrl) {
-      video.setAttribute('data-clip-url', activeClipUrl);
-      video.src = activeClipUrl;
-      video.playbackRate = audioSettings.playbackSpeed;
-      const onReady = () => {
-        try {
-          video.currentTime = Math.min(
-            activeSegment.clip.trimEnd,
-            Math.max(activeSegment.clip.trimStart, expectedSourceTime)
-          );
-        } catch {
-          // ignore
-        }
-        if (isPlaying) {
-          void video.play().catch(() => {});
-        }
-      };
-      video.addEventListener('loadedmetadata', onReady, {once: true});
-    } else if (!isPlaying) {
-      if (Math.abs(video.currentTime - expectedSourceTime) > 0.05) {
-        try {
-          video.currentTime = Math.min(
-            activeSegment.clip.trimEnd,
-            Math.max(activeSegment.clip.trimStart, expectedSourceTime)
-          );
-        } catch {
-          // ignore
-        }
-      }
+    syncVideoElementToSegment(
+      videoRefA.current,
+      activeState.primary,
+      currentTime,
+      isPlaying
+    );
+    syncVideoElementToSegment(
+      videoRefB.current,
+      activeState.outgoing,
+      currentTime,
+      isPlaying
+    );
+    if (!isPlaying) {
       syncOverlayVideos(currentTime, false);
       drawCurrentFrame(currentTime);
     }
   }, [
-    activeClipId,
-    activeClipUrl,
-    activeSegment,
-    audioSettings.playbackSpeed,
+    activeState.primary,
+    activeState.outgoing,
     currentTime,
-    drawCurrentFrame,
     isPlaying,
+    syncVideoElementToSegment,
     syncOverlayVideos,
+    drawCurrentFrame,
   ]);
 
   useEffect(() => {
@@ -514,10 +642,15 @@ export function PreviewCanvasPlayer({
 
   useEffect(() => {
     if (!isPlaying) {
-      const video = videoRef.current;
-      const audio = audioRef.current;
-      if (video && !video.paused) video.pause();
-      if (audio && !audio.paused) audio.pause();
+      if (videoRefA.current && !videoRefA.current.paused) {
+        videoRefA.current.pause();
+      }
+      if (videoRefB.current && !videoRefB.current.paused) {
+        videoRefB.current.pause();
+      }
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+      }
       syncOverlayVideos(currentTime, false);
     }
   }, [isPlaying, currentTime, syncOverlayVideos]);
@@ -539,46 +672,48 @@ export function PreviewCanvasPlayer({
       const dt = Math.min(0.1, Math.max(0, (now - lastStamp) / 1000));
       lastStamp = now;
 
-      const video = videoRef.current;
-      const currentSeg = findActiveVideoSegment(
+      const videoA = videoRefA.current;
+      const state = resolveVideoStateAtTime(
         videoSegments,
         playTimeRef.current
       );
+      const currentSeg = state.primary;
 
       let nextTime = playTimeRef.current + dt;
 
       if (
         currentSeg &&
-        video &&
-        video.getAttribute('data-clip-url') === currentSeg.clip.url &&
-        video.readyState >= 2
+        currentSeg.clip.kind === 'video' &&
+        videoA &&
+        videoA.getAttribute('data-clip-url') === currentSeg.clip.url &&
+        videoA.readyState >= 2
       ) {
-        if (video.paused && !video.ended) {
+        if (videoA.paused && !videoA.ended) {
           const expectedSource =
             currentSeg.clip.trimStart +
             Math.max(0, playTimeRef.current - currentSeg.timelineStart) *
               audioSettings.playbackSpeed;
-          if (Math.abs(video.currentTime - expectedSource) > 0.12) {
-            video.currentTime = expectedSource;
+          if (Math.abs(videoA.currentTime - expectedSource) > 0.12) {
+            videoA.currentTime = expectedSource;
           }
-          void video.play().catch(() => {});
+          void videoA.play().catch(() => {});
         }
 
         const elapsedInClip =
-          Math.max(0, video.currentTime - currentSeg.clip.trimStart) /
+          Math.max(0, videoA.currentTime - currentSeg.clip.trimStart) /
           audioSettings.playbackSpeed;
         const videoDerivedTime = currentSeg.timelineStart + elapsedInClip;
 
         if (
-          video.currentTime >= currentSeg.clip.trimEnd - 0.03 ||
-          video.ended
+          videoA.currentTime >= currentSeg.clip.trimEnd - 0.03 ||
+          videoA.ended
         ) {
           nextTime = currentSeg.timelineEnd + 0.005;
         } else {
           nextTime = Math.max(playTimeRef.current, videoDerivedTime);
         }
-      } else if (video && !video.paused) {
-        video.pause();
+      } else if (videoA && !videoA.paused) {
+        videoA.pause();
       }
 
       if (nextTime >= totalDuration) {
@@ -587,7 +722,10 @@ export function PreviewCanvasPlayer({
         syncOverlayVideos(totalDuration, false);
         drawCurrentFrame(totalDuration);
         syncAudioAtTime(totalDuration, false);
-        if (video && !video.paused) video.pause();
+        if (videoA && !videoA.paused) videoA.pause();
+        if (videoRefB.current && !videoRefB.current.paused) {
+          videoRefB.current.pause();
+        }
         onPlayStateChange(false);
         return;
       }
@@ -630,7 +768,6 @@ export function PreviewCanvasPlayer({
     }
   };
 
-  // Canvas Pointer Drag & Resize for Text + Overlay PIP Layers
   const getCanvasPoint = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -646,7 +783,6 @@ export function PreviewCanvasPlayer({
     const pt = getCanvasPoint(e);
     if (!pt) return;
 
-    // 1. Check selected overlay bottom-right resize handle
     if (selectedOverlayId) {
       const selBounds = overlayBoundsRef.current.find(
         (b) => b.id === selectedOverlayId
@@ -669,7 +805,6 @@ export function PreviewCanvasPlayer({
       }
     }
 
-    // 2. Check Text Overlays (topmost)
     for (let i = textBoundsRef.current.length - 1; i >= 0; i--) {
       const b = textBoundsRef.current[i];
       if (
@@ -692,7 +827,6 @@ export function PreviewCanvasPlayer({
       }
     }
 
-    // 3. Check Overlay / PIP Layers (topmost)
     for (let i = overlayBoundsRef.current.length - 1; i >= 0; i--) {
       const b = overlayBoundsRef.current[i];
       if (
@@ -723,12 +857,24 @@ export function PreviewCanvasPlayer({
     if (!pt) return;
 
     if (drag.kind === 'text') {
-      const nextX = Math.min(0.96, Math.max(0.04, pt.x / targetDims.width - drag.offsetX));
-      const nextY = Math.min(0.96, Math.max(0.04, pt.y / targetDims.height - drag.offsetY));
+      const nextX = Math.min(
+        0.96,
+        Math.max(0.04, pt.x / targetDims.width - drag.offsetX)
+      );
+      const nextY = Math.min(
+        0.96,
+        Math.max(0.04, pt.y / targetDims.height - drag.offsetY)
+      );
       onMoveTextOverlay(drag.id, nextX, nextY);
     } else if (drag.kind === 'overlay-move') {
-      const nextX = Math.min(0.96, Math.max(0.04, pt.x / targetDims.width - drag.offsetX));
-      const nextY = Math.min(0.96, Math.max(0.04, pt.y / targetDims.height - drag.offsetY));
+      const nextX = Math.min(
+        0.96,
+        Math.max(0.04, pt.x / targetDims.width - drag.offsetX)
+      );
+      const nextY = Math.min(
+        0.96,
+        Math.max(0.04, pt.y / targetDims.height - drag.offsetY)
+      );
       onUpdateOverlay(drag.id, {x: nextX, y: nextY});
     } else if (drag.kind === 'overlay-resize') {
       const halfW = Math.max(24, pt.x - drag.centerX);
@@ -864,9 +1010,21 @@ export function PreviewCanvasPlayer({
         className="flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden relative"
       >
         <video
-          ref={videoRef}
+          ref={videoRefA}
           className="hidden"
           playsInline
+          onLoadedData={() => {
+            if (!isPlaying) drawCurrentFrame(currentTime);
+          }}
+          onSeeked={() => {
+            if (!isPlaying) drawCurrentFrame(currentTime);
+          }}
+        />
+        <video
+          ref={videoRefB}
+          className="hidden"
+          playsInline
+          muted
           onLoadedData={() => {
             if (!isPlaying) drawCurrentFrame(currentTime);
           }}

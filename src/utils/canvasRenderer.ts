@@ -1,7 +1,9 @@
 import type {
   AspectRatioPreset,
   BackgroundRemovalConfig,
+  ClipTransition,
   FilterPreset,
+  MotionTransform,
   OverlayLayerItem,
   TextOverlayItem,
   VideoFilters,
@@ -22,12 +24,100 @@ export const ASPECT_RATIO_DIMENSIONS: Record<
   '1:1': {width: 1080, height: 1080, label: '1:1', subtitle: 'Square'},
 };
 
-export const FILTER_PRESET_VALUES: Record<FilterPreset, Omit<VideoFilters, 'preset'>> = {
-  none: {brightness: 100, contrast: 100, saturation: 100, blur: 0},
-  bw: {brightness: 104, contrast: 120, saturation: 0, blur: 0},
-  vintage: {brightness: 105, contrast: 92, saturation: 72, blur: 0},
-  warm: {brightness: 106, contrast: 104, saturation: 125, blur: 0},
-  cinematic: {brightness: 95, contrast: 124, saturation: 88, blur: 0},
+export const FILTER_PRESET_VALUES: Record<
+  FilterPreset,
+  Omit<VideoFilters, 'preset'>
+> = {
+  none: {
+    brightness: 100,
+    contrast: 100,
+    saturation: 100,
+    blur: 0,
+    hueRotate: 0,
+    vignette: 0,
+    sharpen: 0,
+  },
+  bw: {
+    brightness: 104,
+    contrast: 120,
+    saturation: 0,
+    blur: 0,
+    hueRotate: 0,
+    vignette: 10,
+    sharpen: 10,
+  },
+  vintage: {
+    brightness: 105,
+    contrast: 92,
+    saturation: 72,
+    blur: 0,
+    hueRotate: -8,
+    vignette: 35,
+    sharpen: 0,
+  },
+  warm: {
+    brightness: 106,
+    contrast: 104,
+    saturation: 125,
+    blur: 0,
+    hueRotate: -6,
+    vignette: 12,
+    sharpen: 0,
+  },
+  cinematic: {
+    brightness: 95,
+    contrast: 124,
+    saturation: 88,
+    blur: 0,
+    hueRotate: 0,
+    vignette: 32,
+    sharpen: 15,
+  },
+  'teal-orange': {
+    brightness: 98,
+    contrast: 118,
+    saturation: 122,
+    blur: 0,
+    hueRotate: -4,
+    vignette: 26,
+    sharpen: 15,
+  },
+  cyberpunk: {
+    brightness: 102,
+    contrast: 132,
+    saturation: 155,
+    blur: 0,
+    hueRotate: 14,
+    vignette: 30,
+    sharpen: 20,
+  },
+  noir: {
+    brightness: 92,
+    contrast: 150,
+    saturation: 0,
+    blur: 0,
+    hueRotate: 0,
+    vignette: 55,
+    sharpen: 25,
+  },
+  'warm-sunset': {
+    brightness: 108,
+    contrast: 108,
+    saturation: 138,
+    blur: 0,
+    hueRotate: -12,
+    vignette: 22,
+    sharpen: 0,
+  },
+  glitch: {
+    brightness: 104,
+    contrast: 122,
+    saturation: 130,
+    blur: 0,
+    hueRotate: 0,
+    vignette: 18,
+    sharpen: 20,
+  },
 };
 
 export function buildCanvasFilterString(filters: VideoFilters): string {
@@ -37,6 +127,10 @@ export function buildCanvasFilterString(filters: VideoFilters): string {
     `saturate(${filters.saturation}%)`,
   ];
 
+  if (filters.hueRotate !== 0) {
+    parts.push(`hue-rotate(${filters.hueRotate}deg)`);
+  }
+
   if (filters.blur > 0) {
     parts.push(`blur(${filters.blur}px)`);
   }
@@ -44,7 +138,9 @@ export function buildCanvasFilterString(filters: VideoFilters): string {
   if (filters.preset === 'vintage') {
     parts.push('sepia(38%)');
   } else if (filters.preset === 'warm') {
-    parts.push('sepia(20%) hue-rotate(-6deg)');
+    parts.push('sepia(20%)');
+  } else if (filters.preset === 'warm-sunset') {
+    parts.push('sepia(32%)');
   } else if (filters.preset === 'cinematic') {
     parts.push('sepia(10%)');
   }
@@ -107,7 +203,9 @@ function drawRoundedRect(
   ctx.closePath();
 }
 
-function isMediaReady(el: MediaSourceElement | null | undefined): boolean {
+export function isMediaReady(
+  el: MediaSourceElement | null | undefined
+): boolean {
   if (!el) return false;
   if (el instanceof HTMLVideoElement) {
     return el.readyState >= 2 && el.videoWidth > 0 && el.videoHeight > 0;
@@ -120,6 +218,23 @@ function getMediaDims(el: MediaSourceElement): {w: number; h: number} {
     return {w: el.videoWidth, h: el.videoHeight};
   }
   return {w: el.naturalWidth, h: el.naturalHeight};
+}
+
+function getCanvasSourceDims(
+  source: CanvasImageSource,
+  fallbackW: number,
+  fallbackH: number
+): {w: number; h: number} {
+  if (source instanceof HTMLVideoElement) {
+    return {w: source.videoWidth || fallbackW, h: source.videoHeight || fallbackH};
+  }
+  if (source instanceof HTMLImageElement) {
+    return {w: source.naturalWidth || fallbackW, h: source.naturalHeight || fallbackH};
+  }
+  if (source instanceof HTMLCanvasElement) {
+    return {w: source.width || fallbackW, h: source.height || fallbackH};
+  }
+  return {w: fallbackW, h: fallbackH};
 }
 
 function drawCover(
@@ -154,6 +269,59 @@ function drawSubtleCheckerboard(
       }
     }
   }
+}
+
+function applySharpenToCanvas(
+  source: CanvasImageSource,
+  srcW: number,
+  srcH: number,
+  amount: number,
+  maxWidth: number
+): HTMLCanvasElement {
+  const out = getScratchCanvas('sharpen-pass');
+  const scale = Math.min(1, maxWidth / Math.max(srcW, srcH));
+  const w = Math.max(8, Math.round(srcW * scale));
+  const h = Math.max(8, Math.round(srcH * scale));
+
+  if (out.width !== w || out.height !== h) {
+    out.width = w;
+    out.height = h;
+  }
+
+  const ctx = out.getContext('2d', {willReadFrequently: true});
+  if (!ctx) return out;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(source, 0, 0, w, h);
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const src = imgData.data;
+  const dst = new Uint8ClampedArray(src.length);
+  const strength = Math.min(1.8, (amount / 100) * 1.4);
+
+  for (let y = 0; y < h; y++) {
+    const ym = y > 0 ? y - 1 : 0;
+    const yp = y < h - 1 ? y + 1 : h - 1;
+    for (let x = 0; x < w; x++) {
+      const xm = x > 0 ? x - 1 : 0;
+      const xp = x < w - 1 ? x + 1 : w - 1;
+      const idx = (y * w + x) * 4;
+      const top = (ym * w + x) * 4;
+      const bot = (yp * w + x) * 4;
+      const left = (y * w + xm) * 4;
+      const right = (y * w + xp) * 4;
+
+      for (let c = 0; c < 3; c++) {
+        const avg =
+          (src[top + c] + src[bot + c] + src[left + c] + src[right + c]) * 0.25;
+        dst[idx + c] = src[idx + c] + (src[idx + c] - avg) * strength;
+      }
+      dst[idx + 3] = src[idx + 3];
+    }
+  }
+
+  ctx.putImageData(new ImageData(dst, w, h), 0, 0);
+  return out;
 }
 
 function resolveCutoutSource(params: {
@@ -208,14 +376,189 @@ function resolveCutoutSource(params: {
   return source;
 }
 
+function drawTransformedSingleSource(params: {
+  ctx: CanvasRenderingContext2D;
+  canvasWidth: number;
+  canvasHeight: number;
+  source: CanvasImageSource;
+  naturalW: number;
+  naturalH: number;
+  fitMode: VideoFitMode;
+  filters: VideoFilters;
+  motionTransform: MotionTransform;
+  clipProgress: number;
+  currentTime: number;
+  isExport: boolean;
+}) {
+  const {
+    ctx,
+    canvasWidth,
+    canvasHeight,
+    source,
+    naturalW,
+    naturalH,
+    fitMode,
+    filters,
+    motionTransform,
+    clipProgress,
+    currentTime,
+    isExport,
+  } = params;
+
+  const baseScale =
+    fitMode === 'cover'
+      ? Math.max(canvasWidth / naturalW, canvasHeight / naturalH)
+      : Math.min(canvasWidth / naturalW, canvasHeight / naturalH);
+
+  const drawW = naturalW * baseScale;
+  const drawH = naturalH * baseScale;
+
+  // Apply sharpen pass if enabled
+  let finalSource = source;
+  if (filters.sharpen > 0) {
+    const dims = getCanvasSourceDims(source, naturalW, naturalH);
+    finalSource = applySharpenToCanvas(
+      source,
+      dims.w,
+      dims.h,
+      filters.sharpen,
+      isExport ? 1080 : 640
+    );
+  }
+
+  // Compute combined static + animated motion transform
+  let animZoom = 1;
+  let shakeOffsetX = 0;
+  let shakeOffsetY = 0;
+  let shakeAngleDeg = 0;
+
+  if (motionTransform.preset === 'zoom-in') {
+    animZoom = 1 + 0.28 * Math.min(1, Math.max(0, clipProgress));
+  } else if (motionTransform.preset === 'zoom-out') {
+    animZoom = 1.28 - 0.28 * Math.min(1, Math.max(0, clipProgress));
+  } else if (motionTransform.preset === 'camera-shake') {
+    const t = currentTime;
+    shakeOffsetX =
+      (Math.sin(t * 17.3) * 0.6 + Math.cos(t * 29.1) * 0.4) *
+      (canvasWidth * 0.014);
+    shakeOffsetY =
+      (Math.cos(t * 19.7) * 0.6 + Math.sin(t * 31.4) * 0.4) *
+      (canvasHeight * 0.014);
+    shakeAngleDeg = Math.sin(t * 13.5) * 1.4;
+    animZoom = 1.06; // Slight zoom to prevent black border flicker during shake
+  }
+
+  const totalZoom = (motionTransform.zoom / 100) * animZoom;
+  const panPxX = (motionTransform.panX / 100) * (canvasWidth * 0.5) + shakeOffsetX;
+  const panPxY = (motionTransform.panY / 100) * (canvasHeight * 0.5) + shakeOffsetY;
+  const rad = ((motionTransform.rotate + shakeAngleDeg) * Math.PI) / 180;
+  const scaleX = totalZoom * (motionTransform.flipH ? -1 : 1);
+  const scaleY = totalZoom * (motionTransform.flipV ? -1 : 1);
+
+  ctx.save();
+  ctx.translate(canvasWidth / 2 + panPxX, canvasHeight / 2 + panPxY);
+  if (rad !== 0) ctx.rotate(rad);
+  ctx.scale(scaleX, scaleY);
+  ctx.filter = buildCanvasFilterString(filters);
+  ctx.drawImage(finalSource, -drawW / 2, -drawH / 2, drawW, drawH);
+
+  // Glitch effect: RGB offset slices synced deterministically to currentTime
+  if (filters.preset === 'glitch') {
+    const pulse = Math.abs(Math.sin(currentTime * 14.7));
+    const offset = (4 + pulse * 14) * (canvasWidth / 1280);
+    ctx.globalAlpha = 0.32;
+    ctx.globalCompositeOperation = 'screen';
+    ctx.drawImage(finalSource, -drawW / 2 + offset, -drawH / 2, drawW, drawH);
+    ctx.drawImage(finalSource, -drawW / 2 - offset, -drawH / 2, drawW, drawH);
+
+    // Subtle horizontal scanline glitch bar
+    const barSeed = Math.sin(currentTime * 23.1);
+    if (barSeed > 0.25) {
+      const sliceY = -drawH / 2 + ((barSeed * 0.7 + 0.15) * drawH);
+      const sliceH = Math.max(8, drawH * 0.06);
+      ctx.globalAlpha = 0.45;
+      ctx.drawImage(
+        finalSource,
+        0,
+        ((barSeed * 0.7 + 0.15) * getCanvasSourceDims(finalSource, naturalW, naturalH).h),
+        getCanvasSourceDims(finalSource, naturalW, naturalH).w,
+        Math.max(8, getCanvasSourceDims(finalSource, naturalW, naturalH).h * 0.06),
+        -drawW / 2 + offset * 2.2,
+        sliceY,
+        drawW,
+        sliceH
+      );
+    }
+  }
+  ctx.restore();
+}
+
+function drawColorGradingAndVignette(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  filters: VideoFilters
+) {
+  // Preset color grading washes
+  if (filters.preset === 'teal-orange') {
+    ctx.save();
+    const grad = ctx.createLinearGradient(0, 0, canvasWidth, canvasHeight);
+    grad.addColorStop(0, 'rgba(13, 148, 136, 0.22)');
+    grad.addColorStop(1, 'rgba(249, 115, 22, 0.22)');
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.restore();
+  } else if (filters.preset === 'cyberpunk') {
+    ctx.save();
+    const grad = ctx.createLinearGradient(0, 0, canvasWidth, canvasHeight);
+    grad.addColorStop(0, 'rgba(236, 72, 153, 0.24)');
+    grad.addColorStop(1, 'rgba(6, 182, 212, 0.24)');
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.restore();
+  } else if (filters.preset === 'warm-sunset') {
+    ctx.save();
+    const grad = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+    grad.addColorStop(0, 'rgba(251, 146, 60, 0.2)');
+    grad.addColorStop(1, 'rgba(180, 83, 9, 0.16)');
+    ctx.globalCompositeOperation = 'soft-light';
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.restore();
+  }
+
+  // Vignette overlay
+  if (filters.vignette > 0) {
+    ctx.save();
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    const outerR = Math.hypot(cx, cy);
+    const innerR = outerR * (0.48 - (filters.vignette / 100) * 0.22);
+    const strength = Math.min(0.92, (filters.vignette / 100) * 0.88);
+    const radGrad = ctx.createRadialGradient(cx, cy, Math.max(0, innerR), cx, cy, outerR);
+    radGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    radGrad.addColorStop(1, `rgba(0, 0, 0, ${strength})`);
+    ctx.fillStyle = radGrad;
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    ctx.restore();
+  }
+}
+
 export function renderEditorFrame(params: {
   ctx: CanvasRenderingContext2D;
   canvasWidth: number;
   canvasHeight: number;
-  video: HTMLVideoElement | null;
-  hasActiveVideo: boolean;
+  primarySource: MediaSourceElement | null;
+  primaryClipProgress?: number;
+  outgoingSource?: MediaSourceElement | null;
+  outgoingClipProgress?: number;
+  transition?: ClipTransition | null;
+  transitionProgress?: number;
   fitMode: VideoFitMode;
   filters: VideoFilters;
+  motionTransform: MotionTransform;
   mainBgRemoval: BackgroundRemovalConfig;
   mainBgReplacementEl?: MediaSourceElement | null;
   precomputedMainMask?: HTMLCanvasElement | null;
@@ -234,10 +577,15 @@ export function renderEditorFrame(params: {
     ctx,
     canvasWidth,
     canvasHeight,
-    video,
-    hasActiveVideo,
+    primarySource,
+    primaryClipProgress = 0,
+    outgoingSource = null,
+    outgoingClipProgress = 1,
+    transition = null,
+    transitionProgress = 0,
     fitMode,
     filters,
+    motionTransform,
     mainBgRemoval,
     mainBgReplacementEl = null,
     precomputedMainMask,
@@ -258,10 +606,11 @@ export function renderEditorFrame(params: {
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  const mainReady = hasActiveVideo && isMediaReady(video);
+  const mainReady = isMediaReady(primarySource);
+  const outgoingReady = isMediaReady(outgoingSource);
 
   // 1. Background Replacement Layer (when Main Video BG removal is enabled)
-  if (mainReady && video && mainBgRemoval.mode !== 'none') {
+  if (mainReady && primarySource && mainBgRemoval.mode !== 'none') {
     if (mainBgRemoval.replacementType === 'transparent') {
       if (!isExport) {
         drawSubtleCheckerboard(ctx, canvasWidth, canvasHeight);
@@ -272,8 +621,8 @@ export function renderEditorFrame(params: {
     } else if (mainBgRemoval.replacementType === 'blur') {
       ctx.save();
       ctx.filter = `blur(${Math.max(2, mainBgRemoval.replacementBlur)}px)`;
-      const {w: vw, h: vh} = getMediaDims(video);
-      drawCover(ctx, video, vw, vh, canvasWidth, canvasHeight);
+      const {w: vw, h: vh} = getMediaDims(primarySource);
+      drawCover(ctx, primarySource, vw, vh, canvasWidth, canvasHeight);
       ctx.restore();
     } else if (
       (mainBgRemoval.replacementType === 'image' ||
@@ -286,35 +635,165 @@ export function renderEditorFrame(params: {
     }
   }
 
-  // 2. Main Video Layer (with filters & optional BG removal)
-  if (mainReady && video) {
-    const {w: vw, h: vh} = getMediaDims(video);
-    const scale =
-      fitMode === 'cover'
-        ? Math.max(canvasWidth / vw, canvasHeight / vh)
-        : Math.min(canvasWidth / vw, canvasHeight / vh);
-
-    const drawW = vw * scale;
-    const drawH = vh * scale;
-    const drawX = (canvasWidth - drawW) / 2;
-    const drawY = (canvasHeight - drawH) / 2;
-
-    const drawnSource = resolveCutoutSource({
+  // 2. Main Video / Freeze Frame Layer (with Motion, Filters, BG Removal & Clip Transitions)
+  if (mainReady && primarySource) {
+    const primaryCutout = resolveCutoutSource({
       key: 'main',
-      source: video,
+      source: primarySource,
       bgRemoval: mainBgRemoval,
       precomputedMask: precomputedMainMask,
       onMaskUpdated,
       maxProcessWidth: isExport ? 1080 : 680,
     });
+    const {w: pw, h: ph} = getMediaDims(primarySource);
 
-    ctx.save();
-    ctx.filter = buildCanvasFilterString(filters);
-    ctx.drawImage(drawnSource, drawX, drawY, drawW, drawH);
-    ctx.restore();
+    if (
+      outgoingReady &&
+      outgoingSource &&
+      transition &&
+      transition.type !== 'none'
+    ) {
+      const p = Math.min(1, Math.max(0, transitionProgress));
+      const {w: ow, h: oh} = getMediaDims(outgoingSource);
+
+      if (transition.type === 'crossfade') {
+        ctx.save();
+        ctx.globalAlpha = 1 - p;
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: outgoingSource,
+          naturalW: ow,
+          naturalH: oh,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: outgoingClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = p;
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: primaryCutout,
+          naturalW: pw,
+          naturalH: ph,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: primaryClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+      } else if (transition.type === 'slide-left') {
+        ctx.save();
+        ctx.translate(-p * canvasWidth, 0);
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: outgoingSource,
+          naturalW: ow,
+          naturalH: oh,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: outgoingClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate((1 - p) * canvasWidth, 0);
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: primaryCutout,
+          naturalW: pw,
+          naturalH: ph,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: primaryClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+      } else if (transition.type === 'zoom') {
+        const outScale = 1 + 0.35 * p;
+        ctx.save();
+        ctx.globalAlpha = 1 - p;
+        ctx.translate(canvasWidth / 2, canvasHeight / 2);
+        ctx.scale(outScale, outScale);
+        ctx.translate(-canvasWidth / 2, -canvasHeight / 2);
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: outgoingSource,
+          naturalW: ow,
+          naturalH: oh,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: outgoingClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+
+        const inScale = 0.78 + 0.22 * p;
+        ctx.save();
+        ctx.globalAlpha = p;
+        ctx.translate(canvasWidth / 2, canvasHeight / 2);
+        ctx.scale(inScale, inScale);
+        ctx.translate(-canvasWidth / 2, -canvasHeight / 2);
+        drawTransformedSingleSource({
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          source: primaryCutout,
+          naturalW: pw,
+          naturalH: ph,
+          fitMode,
+          filters,
+          motionTransform,
+          clipProgress: primaryClipProgress,
+          currentTime,
+          isExport,
+        });
+        ctx.restore();
+      }
+    } else {
+      drawTransformedSingleSource({
+        ctx,
+        canvasWidth,
+        canvasHeight,
+        source: primaryCutout,
+        naturalW: pw,
+        naturalH: ph,
+        fitMode,
+        filters,
+        motionTransform,
+        clipProgress: primaryClipProgress,
+        currentTime,
+        isExport,
+      });
+    }
+
+    drawColorGradingAndVignette(ctx, canvasWidth, canvasHeight, filters);
   }
 
-  // 3. Overlay / PIP Layers (Images & Secondary Videos)
+  // 3. Overlay / PIP Layers
   const overlayBounds: OverlayLayerBounds[] = [];
   const scaleFactor = Math.min(canvasWidth, canvasHeight) / 720;
 
@@ -359,7 +838,6 @@ export function renderEditorFrame(params: {
       ctx.strokeRect(left, top, drawW, drawH);
       ctx.setLineDash([]);
 
-      // Bottom-right resize handle
       const hx = left + drawW - handleSize / 2;
       const hy = top + drawH - handleSize / 2;
       ctx.fillStyle = '#38BDF8';

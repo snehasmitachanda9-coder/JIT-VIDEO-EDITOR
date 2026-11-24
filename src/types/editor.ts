@@ -1,7 +1,57 @@
 export type AspectRatioPreset = '16:9' | '9:16' | '1:1';
 export type VideoFitMode = 'contain' | 'cover';
-export type FilterPreset = 'none' | 'bw' | 'vintage' | 'warm' | 'cinematic';
-export type RightPanelTab = 'text' | 'filters' | 'bg-remove' | 'audio' | 'ai';
+export type FilterPreset =
+  | 'none'
+  | 'bw'
+  | 'vintage'
+  | 'warm'
+  | 'cinematic'
+  | 'teal-orange'
+  | 'cyberpunk'
+  | 'noir'
+  | 'warm-sunset'
+  | 'glitch';
+
+export type RightPanelTab =
+  | 'motion'
+  | 'filters'
+  | 'bg-remove'
+  | 'text'
+  | 'audio'
+  | 'ai';
+
+export type MotionPreset =
+  | 'none'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'camera-shake';
+
+export interface MotionTransform {
+  zoom: number; // 50..300 (%)
+  panX: number; // -100..100 (%)
+  panY: number; // -100..100 (%)
+  rotate: number; // -180..180 (deg)
+  flipH: boolean;
+  flipV: boolean;
+  preset: MotionPreset;
+}
+
+export const DEFAULT_MOTION_TRANSFORM: MotionTransform = {
+  zoom: 100,
+  panX: 0,
+  panY: 0,
+  rotate: 0,
+  flipH: false,
+  flipV: false,
+  preset: 'none',
+};
+
+export type TransitionType = 'none' | 'crossfade' | 'slide-left' | 'zoom';
+
+export interface ClipTransition {
+  type: TransitionType;
+  duration: number; // 0.5..2.0 seconds
+}
 
 export type BackgroundRemovalMode = 'none' | 'ai-person' | 'chroma-key';
 export type BackgroundReplacementType =
@@ -64,6 +114,7 @@ export interface AudioAsset {
 
 export interface TimelineVideoClip {
   id: string;
+  kind: 'video' | 'freeze';
   assetId: string;
   name: string;
   url: string;
@@ -71,6 +122,7 @@ export interface TimelineVideoClip {
   sourceDuration: number;
   trimStart: number;
   trimEnd: number;
+  transitionIn: ClipTransition;
 }
 
 export interface OverlayLayerItem {
@@ -122,6 +174,9 @@ export interface VideoFilters {
   contrast: number; // 0..200 (100 = normal)
   saturation: number; // 0..200 (100 = normal)
   blur: number; // 0..12 px
+  hueRotate: number; // -180..180 deg
+  vignette: number; // 0..100 %
+  sharpen: number; // 0..100 %
   preset: FilterPreset;
 }
 
