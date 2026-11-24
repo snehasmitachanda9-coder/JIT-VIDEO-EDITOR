@@ -24,11 +24,11 @@ const app = express();
 app.use(express.json({limit: '4mb'}));
 
 app.post('/api/gemini/studio', async (req: Request, res: Response) => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({
+  const apiKey = (process.env.GEMINI_API_KEY ?? '').trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    res.status(503).json({
       error:
-        'GEMINI_API_KEY is not configured. Please add your Gemini API key in Settings > Secrets.',
+        'GEMINI_API_KEY is not configured. Please add your Gemini API key in Settings > Secrets to use AI Studio.',
     });
     return;
   }
@@ -141,11 +141,46 @@ app.post('/api/gemini/studio', async (req: Request, res: Response) => {
       return;
     }
 
-    const parsed = JSON.parse(rawText);
-    res.json(parsed);
+    const parsed = JSON.parse(rawText) as Record<string, unknown>;
+    const normalized = {
+      titles: Array.isArray(parsed.titles)
+        ? parsed.titles.filter((t): t is string => typeof t === 'string')
+        : [],
+      description:
+        typeof parsed.description === 'string' ? parsed.description : '',
+      hashtags: Array.isArray(parsed.hashtags)
+        ? parsed.hashtags.filter((h): h is string => typeof h === 'string')
+        : [],
+      captions: Array.isArray(parsed.captions)
+        ? parsed.captions
+            .filter(
+              (c): c is {startTime: number; endTime: number; text: string} =>
+                Boolean(c) &&
+                typeof (c as {text?: unknown}).text === 'string' &&
+                typeof (c as {startTime?: unknown}).startTime === 'number' &&
+                typeof (c as {endTime?: unknown}).endTime === 'number'
+            )
+            .map((c) => ({
+              startTime: Math.max(0, c.startTime),
+              endTime: Math.max(c.startTime + 0.5, c.endTime),
+              text: c.text,
+            }))
+        : [],
+    };
+    res.json(normalized);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Failed to generate AI Studio content.';
+    let message =
+      error instanceof Error
+        ? error.message
+        : 'Failed to generate AI Studio content.';
+    try {
+      const inner = JSON.parse(message) as {error?: {message?: string}};
+      if (inner?.error?.message) {
+        message = inner.error.message;
+      }
+    } catch {
+      // keep original message
+    }
     res.status(500).json({error: message});
   }
 });

@@ -224,13 +224,11 @@ export function TimelinePanel({
     currentTime,
   ]);
 
-  const editingTransitionClip = useMemo(
-    () =>
-      editingTransitionClipId
-        ? videoClips.find((c) => c.id === editingTransitionClipId) ?? null
-        : null,
-    [editingTransitionClipId, videoClips]
-  );
+  const editingTransitionClip = useMemo(() => {
+    if (!editingTransitionClipId) return null;
+    const idx = videoClips.findIndex((c) => c.id === editingTransitionClipId);
+    return idx > 0 ? videoClips[idx] : null;
+  }, [editingTransitionClipId, videoClips]);
 
   const timeFromClientX = (clientX: number): number => {
     const el = trackContainerRef.current;

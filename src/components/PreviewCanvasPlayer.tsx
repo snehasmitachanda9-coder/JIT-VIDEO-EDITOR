@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -107,6 +108,8 @@ type CanvasDragState =
       kind: 'overlay-resize';
       id: string;
       centerX: number;
+      centerY: number;
+      aspectRatio: number;
     };
 
 export function PreviewCanvasPlayer({
@@ -176,8 +179,8 @@ export function PreviewCanvasPlayer({
     [overlayLayers, selectedOverlayId]
   );
 
-  // Measure available stage container dynamically
-  useEffect(() => {
+  // Measure available stage container dynamically (synchronous layout pass for Full Preview & Aspect Ratio changes)
+  useLayoutEffect(() => {
     const el = stageRef.current;
     if (!el) return;
     const updateSize = () => {
@@ -193,13 +196,23 @@ export function PreviewCanvasPlayer({
         h = availH;
         w = h * ratio;
       }
-      setStageSize({width: Math.round(w), height: Math.round(h)});
+      const nextW = Math.round(w);
+      const nextH = Math.round(h);
+      setStageSize((prev) =>
+        prev.width === nextW && prev.height === nextH
+          ? prev
+          : {width: nextW, height: nextH}
+      );
     };
 
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(el);
-    return () => observer.disconnect();
+    window.addEventListener('resize', updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
   }, [targetDims.width, targetDims.height, isFullPreview]);
 
   // Preload freeze-frame HTMLImageElements
@@ -591,10 +604,8 @@ export function PreviewCanvasPlayer({
     drawCurrentFrame,
   ]);
 
-  useEffect(() => {
-    if (!isPlaying) {
-      drawCurrentFrame(currentTime);
-    }
+  useLayoutEffect(() => {
+    drawCurrentFrame(isPlaying ? playTimeRef.current : currentTime);
   }, [isPlaying, currentTime, renderTick, drawCurrentFrame]);
 
   const syncAudioAtTime = useCallback(
@@ -797,6 +808,8 @@ export function PreviewCanvasPlayer({
               kind: 'overlay-resize',
               id: layer.id,
               centerX: layer.x * targetDims.width,
+              centerY: layer.y * targetDims.height,
+              aspectRatio: layer.aspectRatio > 0 ? layer.aspectRatio : 1,
             };
             e.currentTarget.setPointerCapture(e.pointerId);
             return;
@@ -877,7 +890,9 @@ export function PreviewCanvasPlayer({
       );
       onUpdateOverlay(drag.id, {x: nextX, y: nextY});
     } else if (drag.kind === 'overlay-resize') {
-      const halfW = Math.max(24, pt.x - drag.centerX);
+      const halfWFromX = pt.x - drag.centerX;
+      const halfWFromY = (pt.y - drag.centerY) * drag.aspectRatio;
+      const halfW = Math.max(24, halfWFromX, halfWFromY);
       const nextWidthNorm = Math.min(
         1,
         Math.max(0.08, (halfW * 2) / targetDims.width)
@@ -945,15 +960,17 @@ export function PreviewCanvasPlayer({
           <div
             role="group"
             aria-label="Video Scaling"
-            className="hidden sm:flex items-center gap-0.5 p-0.5 rounded-md bg-[#090B0E] border border-zinc-800/80"
+            className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#090B0E] border border-zinc-800/80"
           >
             <button
               type="button"
               onClick={() => onFitModeChange('contain')}
-              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+              aria-pressed={fitMode === 'contain'}
+              title="Fit: Letterbox inside frame without cropping"
+              className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
                 fitMode === 'contain'
-                  ? 'bg-zinc-800 text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-300'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               Fit
@@ -961,10 +978,12 @@ export function PreviewCanvasPlayer({
             <button
               type="button"
               onClick={() => onFitModeChange('cover')}
-              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+              aria-pressed={fitMode === 'cover'}
+              title="Fill: Crop to cover entire frame"
+              className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
                 fitMode === 'cover'
-                  ? 'bg-zinc-800 text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-300'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               Fill
@@ -1016,6 +1035,9 @@ export function PreviewCanvasPlayer({
           onLoadedData={() => {
             if (!isPlaying) drawCurrentFrame(currentTime);
           }}
+          onCanPlay={() => {
+            if (!isPlaying) drawCurrentFrame(currentTime);
+          }}
           onSeeked={() => {
             if (!isPlaying) drawCurrentFrame(currentTime);
           }}
@@ -1026,6 +1048,9 @@ export function PreviewCanvasPlayer({
           playsInline
           muted
           onLoadedData={() => {
+            if (!isPlaying) drawCurrentFrame(currentTime);
+          }}
+          onCanPlay={() => {
             if (!isPlaying) drawCurrentFrame(currentTime);
           }}
           onSeeked={() => {

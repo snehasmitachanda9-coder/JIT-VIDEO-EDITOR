@@ -1,4 +1,11 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import {ExportModal} from './components/ExportModal';
 import {Header} from './components/Header';
 import {MediaSidebar} from './components/MediaSidebar';
@@ -272,6 +279,8 @@ export default function App() {
       setMediaAssets((prev) => [...prev, ...newAssets]);
 
       const videoAssets = newAssets.filter((a) => a.kind === 'video');
+      const imageAssets = newAssets.filter((a) => a.kind === 'image');
+
       if (videoAssets.length > 0) {
         setVideoClips((prev) => {
           if (prev.length > 0) return prev;
@@ -292,9 +301,54 @@ export default function App() {
           }
           return appended;
         });
+      } else if (
+        imageAssets.length > 0 &&
+        videoClips.length === 0 &&
+        overlayLayers.length === 0
+      ) {
+        let cursor = 0;
+        const createdOverlays: OverlayLayerItem[] = imageAssets.map((a) => {
+          const naturalAspect =
+            a.width > 0 && a.height > 0 ? a.width / a.height : 1;
+          const layer: OverlayLayerItem = {
+            id: makeId('overlay'),
+            assetId: a.id,
+            kind: 'image',
+            name: a.name,
+            url: a.url,
+            thumbnailUrl: a.thumbnailUrl,
+            sourceDuration: 0,
+            sourceTrimStart: 0,
+            startTime: cursor,
+            endTime: cursor + 5,
+            x: 0.5,
+            y: 0.5,
+            width: 0.65,
+            aspectRatio: naturalAspect,
+            opacity: 1,
+            bgRemoval: {...DEFAULT_BG_REMOVAL, replacementType: 'transparent'},
+          };
+          cursor += 5;
+          return layer;
+        });
+        setOverlayLayers(createdOverlays);
+        if (createdOverlays[0]) {
+          setSelectedItem({track: 'overlay', id: createdOverlays[0].id});
+          setBgTargetKey(createdOverlays[0].id);
+        }
       }
     },
-    []
+    [videoClips.length, overlayLayers.length]
+  );
+
+  const handleFileInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      if (event.target.files && event.target.files.length > 0) {
+        void handleUploadMediaFiles(event.target.files);
+        event.target.value = '';
+      }
+    },
+    [handleUploadMediaFiles]
   );
 
   const handleAddVideoToTimeline = useCallback((asset: MediaAsset) => {
@@ -1019,6 +1073,16 @@ export default function App() {
         onExportClick={handleStartExport}
       />
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="video/mp4,video/webm,image/png,image/jpeg,image/webp,.mp4,.webm,.png,.jpg,.jpeg,.webp"
+        multiple
+        onChange={handleFileInputChange}
+        className="sr-only"
+        aria-label="Upload MP4, WebM, PNG, JPG, or WebP files"
+      />
+
       <main className="flex-1 min-h-0 flex overflow-hidden">
         {!isFullPreview && (
           <MediaSidebar
@@ -1027,10 +1091,10 @@ export default function App() {
             assets={mediaAssets}
             errorMessage={uploadError}
             onUploadFiles={handleUploadMediaFiles}
+            onTriggerUpload={() => fileInputRef.current?.click()}
             onAddVideoToTimeline={handleAddVideoToTimeline}
             onAddOverlayToTimeline={handleAddOverlayToTimeline}
             onRemoveAsset={handleRemoveAsset}
-            fileInputRef={fileInputRef}
           />
         )}
 

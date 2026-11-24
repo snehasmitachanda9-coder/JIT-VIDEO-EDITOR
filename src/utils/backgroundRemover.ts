@@ -27,6 +27,7 @@ let isBusy = false;
 
 const maskCache = new Map<string, HTMLCanvasElement>();
 const lastRequestStamp = new Map<string, number>();
+let pendingNotifyAfterBusy: (() => void) | null = null;
 
 function loadSelfieSegmentationScript(): Promise<void> {
   if (typeof window === 'undefined') {
@@ -171,6 +172,11 @@ function runSegmentationInternal(
       return maskCache.get(key) ?? null;
     } finally {
       isBusy = false;
+      const notify = pendingNotifyAfterBusy;
+      pendingNotifyAfterBusy = null;
+      if (notify) {
+        window.setTimeout(notify, 0);
+      }
     }
   });
 
@@ -194,7 +200,14 @@ export function getCachedMaskOrSchedule(
   const now = performance.now();
   const last = lastRequestStamp.get(key) ?? 0;
 
-  if (!isBusy && now - last > 30) {
+  if (isBusy) {
+    if (onUpdated) {
+      pendingNotifyAfterBusy = onUpdated;
+    }
+    return maskCache.get(key) ?? null;
+  }
+
+  if (now - last > 24) {
     lastRequestStamp.set(key, now);
     void runSegmentationInternal(key, source).then((mask) => {
       if (mask && onUpdated) {

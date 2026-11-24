@@ -73,21 +73,21 @@ function waitForImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-function waitForVideoReady(video: HTMLVideoElement): Promise<void> {
+function waitForMediaReady(media: HTMLMediaElement): Promise<void> {
   return new Promise((resolve) => {
-    if (video.readyState >= 2) {
+    if (media.readyState >= 2) {
       resolve();
       return;
     }
     const finish = () => {
-      video.removeEventListener('canplay', finish);
-      video.removeEventListener('loadeddata', finish);
+      media.removeEventListener('canplay', finish);
+      media.removeEventListener('loadeddata', finish);
       window.clearTimeout(timer);
       resolve();
     };
     const timer = window.setTimeout(finish, 4000);
-    video.addEventListener('canplay', finish, {once: true});
-    video.addEventListener('loadeddata', finish, {once: true});
+    media.addEventListener('canplay', finish, {once: true});
+    media.addEventListener('loadeddata', finish, {once: true});
   });
 }
 
@@ -236,7 +236,7 @@ export async function exportEditedVideo(
       bgVid.loop = true;
       bgVid.muted = true;
       bgVid.src = mainBgRemoval.replacementAssetUrl;
-      await waitForVideoReady(bgVid);
+      await waitForMediaReady(bgVid);
       bgReplacementEl = bgVid;
     }
   }
@@ -260,7 +260,7 @@ export async function exportEditedVideo(
       vid.muted = true;
       vid.preload = 'auto';
       vid.src = layer.url;
-      await waitForVideoReady(vid);
+      await waitForMediaReady(vid);
       overlayElementsMap.set(layer.id, vid);
       overlayVideoElements.push(vid);
     }
@@ -370,7 +370,7 @@ export async function exportEditedVideo(
           if (activeMainClipUrl !== seg.clip.url) {
             activeMainClipUrl = seg.clip.url;
             mainVideoEl.src = seg.clip.url;
-            await waitForVideoReady(mainVideoEl);
+            await waitForMediaReady(mainVideoEl);
             mainVideoEl.playbackRate = audioSettings.playbackSpeed;
             await seekMedia(mainVideoEl, expectedSrcTime);
             if (!hasAiSegmentation) {
@@ -396,6 +396,7 @@ export async function exportEditedVideo(
       if (outSeg) {
         if (outSeg.clip.kind === 'freeze') {
           outgoingSource = freezeImageMap.get(outSeg.clip.id) ?? null;
+          if (!outgoingVideoEl.paused) outgoingVideoEl.pause();
         } else {
           const expectedOutTime =
             outSeg.clip.trimStart +
@@ -405,17 +406,21 @@ export async function exportEditedVideo(
           if (activeOutgoingUrl !== outSeg.clip.url) {
             activeOutgoingUrl = outSeg.clip.url;
             outgoingVideoEl.src = outSeg.clip.url;
-            await waitForVideoReady(outgoingVideoEl);
+            await waitForMediaReady(outgoingVideoEl);
             outgoingVideoEl.playbackRate = audioSettings.playbackSpeed;
             await seekMedia(outgoingVideoEl, expectedOutTime);
             if (!hasAiSegmentation) {
               void outgoingVideoEl.play().catch(() => {});
             }
-          } else if (
-            hasAiSegmentation ||
-            Math.abs(outgoingVideoEl.currentTime - expectedOutTime) > 0.2
-          ) {
+          } else if (hasAiSegmentation) {
             await seekMedia(outgoingVideoEl, expectedOutTime);
+          } else {
+            if (Math.abs(outgoingVideoEl.currentTime - expectedOutTime) > 0.2) {
+              await seekMedia(outgoingVideoEl, expectedOutTime);
+            }
+            if (outgoingVideoEl.paused && !outgoingVideoEl.ended) {
+              void outgoingVideoEl.play().catch(() => {});
+            }
           }
           outgoingSource = outgoingVideoEl;
         }
@@ -466,6 +471,7 @@ export async function exportEditedVideo(
           if (activeMusicClipId !== matchingAudio.id) {
             activeMusicClipId = matchingAudio.id;
             musicEl.src = matchingAudio.url;
+            await waitForMediaReady(musicEl);
             await seekMedia(musicEl, targetAudioTime);
             void musicEl.play().catch(() => {});
           } else {

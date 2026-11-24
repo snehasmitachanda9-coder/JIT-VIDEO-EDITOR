@@ -655,6 +655,16 @@ export function renderEditorFrame(params: {
     ) {
       const p = Math.min(1, Math.max(0, transitionProgress));
       const {w: ow, h: oh} = getMediaDims(outgoingSource);
+      const outgoingCutout =
+        mainBgRemoval.mode !== 'none'
+          ? resolveCutoutSource({
+              key: 'main-outgoing',
+              source: outgoingSource,
+              bgRemoval: mainBgRemoval,
+              onMaskUpdated,
+              maxProcessWidth: isExport ? 1080 : 680,
+            })
+          : outgoingSource;
 
       if (transition.type === 'crossfade') {
         ctx.save();
@@ -663,7 +673,7 @@ export function renderEditorFrame(params: {
           ctx,
           canvasWidth,
           canvasHeight,
-          source: outgoingSource,
+          source: outgoingCutout,
           naturalW: ow,
           naturalH: oh,
           fitMode,
@@ -699,7 +709,7 @@ export function renderEditorFrame(params: {
           ctx,
           canvasWidth,
           canvasHeight,
-          source: outgoingSource,
+          source: outgoingCutout,
           naturalW: ow,
           naturalH: oh,
           fitMode,
@@ -739,7 +749,7 @@ export function renderEditorFrame(params: {
           ctx,
           canvasWidth,
           canvasHeight,
-          source: outgoingSource,
+          source: outgoingCutout,
           naturalW: ow,
           naturalH: oh,
           fitMode,

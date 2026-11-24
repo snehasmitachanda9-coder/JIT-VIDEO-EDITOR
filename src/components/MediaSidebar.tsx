@@ -1,4 +1,4 @@
-import {useRef, useState, type ChangeEvent, type DragEvent} from 'react';
+import {useRef, useState, type DragEvent} from 'react';
 import {
   Film,
   Image as ImageIcon,
@@ -18,10 +18,10 @@ interface MediaSidebarProps {
   assets: MediaAsset[];
   errorMessage: string | null;
   onUploadFiles: (files: FileList | File[]) => void;
+  onTriggerUpload: () => void;
   onAddVideoToTimeline: (asset: MediaAsset) => void;
   onAddOverlayToTimeline: (asset: MediaAsset) => void;
   onRemoveAsset: (id: string) => void;
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
 }
 
 export function MediaSidebar({
@@ -30,20 +30,13 @@ export function MediaSidebar({
   assets,
   errorMessage,
   onUploadFiles,
+  onTriggerUpload,
   onAddVideoToTimeline,
   onAddOverlayToTimeline,
   onRemoveAsset,
-  fileInputRef,
 }: MediaSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const dragDepthRef = useRef(0);
-
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      onUploadFiles(event.target.files);
-      event.target.value = '';
-    }
-  };
 
   const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -82,15 +75,6 @@ export function MediaSidebar({
         aria-label="Media Upload (collapsed)"
         className="w-10 shrink-0 border-r border-zinc-800/80 bg-[#12151B] flex flex-col items-center py-2.5 gap-3"
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/mp4,video/webm,image/png,image/jpeg,image/webp,.mp4,.webm,.png,.jpg,.jpeg,.webp"
-          multiple
-          onChange={handleFileChange}
-          className="sr-only"
-          aria-label="Upload video or image files"
-        />
         <button
           type="button"
           onClick={onToggleCollapse}
@@ -102,7 +86,7 @@ export function MediaSidebar({
         </button>
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={onTriggerUpload}
           title="Upload media"
           aria-label="Upload media"
           className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
@@ -144,19 +128,9 @@ export function MediaSidebar({
       </div>
 
       <div className="p-3 border-b border-zinc-800/70">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/mp4,video/webm,image/png,image/jpeg,image/webp,.mp4,.webm,.png,.jpg,.jpeg,.webp"
-          multiple
-          onChange={handleFileChange}
-          className="sr-only"
-          aria-label="Upload MP4, WebM, PNG, JPG, or WebP files"
-        />
-
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={onTriggerUpload}
           className={`w-full rounded-lg border border-dashed px-2.5 py-3 flex flex-col items-center justify-center gap-1.5 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
             isDragging
               ? 'border-blue-500 bg-blue-500/10 text-blue-200'

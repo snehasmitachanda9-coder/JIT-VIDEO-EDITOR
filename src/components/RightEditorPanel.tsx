@@ -255,11 +255,29 @@ export function RightEditorPanel({
         }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || 'Failed to generate AI suggestions.');
+      const rawText = await response.text();
+      let data: Partial<AIStudioResult> & {error?: string} = {};
+      try {
+        data = JSON.parse(rawText) as Partial<AIStudioResult> & {
+          error?: string;
+        };
+      } catch {
+        throw new Error(
+          response.ok
+            ? 'Received an invalid response from AI Studio.'
+            : `AI Studio service unavailable (${response.status}). Check your Gemini API key configuration.`
+        );
       }
-      setAiResult(data as AIStudioResult);
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate AI suggestions.');
+      }
+      setAiResult({
+        titles: Array.isArray(data.titles) ? data.titles : [],
+        description:
+          typeof data.description === 'string' ? data.description : '',
+        hashtags: Array.isArray(data.hashtags) ? data.hashtags : [],
+        captions: Array.isArray(data.captions) ? data.captions : [],
+      });
     } catch (err) {
       setAiError(
         err instanceof Error
