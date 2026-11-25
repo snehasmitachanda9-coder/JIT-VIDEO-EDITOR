@@ -181,6 +181,20 @@ app.post('/api/gemini/studio', async (req: Request, res: Response) => {
     } catch {
       // keep original message
     }
+    const lower = message.toLowerCase();
+    if (
+      lower.includes('api key not valid') ||
+      lower.includes('api_key_invalid') ||
+      lower.includes('invalid api key') ||
+      lower.includes('permission_denied') ||
+      lower.includes('unauthorized')
+    ) {
+      res.status(401).json({
+        error:
+          'Your GEMINI_API_KEY appears invalid or lacks permission. Please verify it in Settings > Secrets.',
+      });
+      return;
+    }
     res.status(500).json({error: message});
   }
 });

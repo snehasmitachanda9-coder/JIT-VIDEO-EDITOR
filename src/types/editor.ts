@@ -23,10 +23,28 @@ export type RightPanelTab =
 
 export type WeatherEffectType = 'rain' | 'snow' | 'smoke';
 
+export type PartyVfxType =
+  | 'disco'
+  | 'rgb-split'
+  | 'vhs'
+  | 'cartoon'
+  | 'pencil-sketch'
+  | 'mirror'
+  | 'split-screen'
+  | 'double-exposure'
+  | 'heart-star-burst';
+
+export type CinemaVfxType =
+  | 'letterbox'
+  | 'film-grain'
+  | 'lens-flare'
+  | 'light-leak'
+  | 'film-burn'
+  | 'motion-blur'
+  | 'ai-portrait';
+
 export type TimelineEffectType =
-  | 'rain'
-  | 'snow'
-  | 'smoke'
+  | WeatherEffectType
   | 'zoom-in'
   | 'zoom-out'
   | 'camera-shake'
@@ -38,9 +56,16 @@ export type TimelineEffectType =
   | 'cinematic'
   | 'vintage'
   | 'bw'
-  | 'warm';
+  | 'warm'
+  | PartyVfxType
+  | CinemaVfxType;
 
-export type TimelineEffectCategory = 'weather' | 'motion' | 'filter';
+export type TimelineEffectCategory =
+  | 'weather'
+  | 'motion'
+  | 'filter'
+  | 'party'
+  | 'cinema';
 
 export interface TimelineEffectItem {
   id: string;
@@ -48,10 +73,14 @@ export interface TimelineEffectItem {
   category: TimelineEffectCategory;
   name: string;
   icon: string;
-  intensity: number; // 0.1..1.0
+  intensity: number; // 0..1.0
   opacity: number; // 0.1..1.0
   startTime: number;
   endTime: number;
+  // Precision timed zoom keyframe controls (used by zoom-in / zoom-out)
+  targetZoom?: number; // 110..300 (%)
+  zoomCenterX?: number; // 0..100 (%)
+  zoomCenterY?: number; // 0..100 (%)
 }
 
 export type StickerKind =
@@ -64,6 +93,23 @@ export type StickerKind =
   | 'star'
   | 'party-hat'
   | 'speech-bubble';
+
+export type OverlayAnimationPreset =
+  | 'none'
+  | 'pop'
+  | 'fade'
+  | 'typewriter'
+  | 'slide-up'
+  | 'bounce'
+  | '3d-extrude';
+
+export type FaceAnchorPreset =
+  | 'custom'
+  | 'face-head'
+  | 'face-eyes'
+  | 'face-mouth'
+  | 'center'
+  | 'lower-third';
 
 export type BuiltInSfxKind = 'whoosh' | 'pop' | 'clap' | 'laugh';
 
@@ -93,11 +139,23 @@ export const DEFAULT_MOTION_TRANSFORM: MotionTransform = {
   preset: 'none',
 };
 
-export type TransitionType = 'none' | 'crossfade' | 'slide-left' | 'zoom';
+export type TransitionType =
+  | 'none'
+  | 'crossfade'
+  | 'slide-left'
+  | 'slide-right'
+  | 'wipe'
+  | 'zoom'
+  | 'glitch'
+  | 'flash-white'
+  | 'flash-black'
+  | 'spin'
+  | 'blur'
+  | 'cube-3d';
 
 export interface ClipTransition {
   type: TransitionType;
-  duration: number; // 0.5..2.0 seconds
+  duration: number; // 0.3..2.5 seconds
 }
 
 export type BackgroundRemovalMode = 'none' | 'ai-person' | 'chroma-key';
@@ -189,6 +247,9 @@ export interface OverlayLayerItem {
   width: number; // Normalized 0..1 fraction of canvas width
   aspectRatio: number; // Natural width / height
   opacity: number; // 0..1
+  animation?: OverlayAnimationPreset;
+  anchorPreset?: FaceAnchorPreset;
+  followMotion?: boolean;
   bgRemoval: BackgroundRemovalConfig;
 }
 
@@ -202,6 +263,8 @@ export interface TimelineAudioClip {
   trimStart: number;
   trimEnd: number;
   volume?: number; // 0..1.5 (defaults to 1)
+  fadeIn?: number; // 0..5 seconds
+  fadeOut?: number; // 0..5 seconds
   isSfx?: boolean;
 }
 
@@ -217,6 +280,9 @@ export interface TextOverlayItem {
   hasBackground: boolean;
   startTime: number;
   endTime: number;
+  animation?: OverlayAnimationPreset;
+  anchorPreset?: FaceAnchorPreset;
+  followMotion?: boolean;
 }
 
 export interface VideoFilters {
@@ -231,11 +297,25 @@ export interface VideoFilters {
   preset: FilterPreset;
 }
 
+export type VoiceChangerPreset =
+  | 'normal'
+  | 'deep'
+  | 'chipmunk'
+  | 'robot'
+  | 'radio';
+
 export interface AudioEffectsConfig {
   echoEnabled: boolean;
   echoAmount: number; // 0..100 %
   reverbEnabled: boolean;
   reverbAmount: number; // 0..100 %
+  noiseReductionEnabled: boolean;
+  noiseReductionAmount: number; // 0..100 %
+  voiceEnhanceEnabled: boolean;
+  voiceEnhanceAmount: number; // 0..100 %
+  voicePreset: VoiceChangerPreset;
+  pitchSemitones: number; // -12..+12
+  autoVolumeEnabled: boolean;
   target: 'both' | 'video' | 'music';
 }
 
@@ -244,6 +324,13 @@ export const DEFAULT_AUDIO_EFFECTS: AudioEffectsConfig = {
   echoAmount: 45,
   reverbEnabled: false,
   reverbAmount: 50,
+  noiseReductionEnabled: false,
+  noiseReductionAmount: 55,
+  voiceEnhanceEnabled: false,
+  voiceEnhanceAmount: 65,
+  voicePreset: 'normal',
+  pitchSemitones: 0,
+  autoVolumeEnabled: false,
   target: 'both',
 };
 
@@ -254,6 +341,13 @@ export interface AudioSettings {
   musicMuted: boolean;
   playbackSpeed: number; // 0.5..2.0
   effects: AudioEffectsConfig;
+}
+
+export interface BeatSyncAnalysis {
+  clipId: string;
+  clipName: string;
+  bpm: number;
+  beatTimes: number[]; // Timeline timestamps in seconds
 }
 
 export type SelectedTimelineItem =

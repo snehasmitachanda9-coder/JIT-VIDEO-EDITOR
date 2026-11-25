@@ -38,6 +38,7 @@ export interface ExportVideoOptions {
   motionTransform: MotionTransform;
   mainBgRemoval: BackgroundRemovalConfig;
   audioSettings: AudioSettings;
+  beatTimes?: number[];
   onProgress: (percent: number, phase: string) => void;
   signal: AbortSignal;
 }
@@ -137,6 +138,7 @@ export async function exportEditedVideo(
     motionTransform,
     mainBgRemoval,
     audioSettings,
+    beatTimes = [],
     onProgress,
     signal,
   } = options;
@@ -213,8 +215,11 @@ export async function exportEditedVideo(
     }
   }
 
-  // Per-clip audio elements so Music + multiple SFX can play simultaneously
-  const audioClipElements = new Map<string, HTMLAudioElement>();
+  // Per-clip audio elements so Music + multiple SFX can play simultaneously with Fade In/Out
+  const audioClipElements = new Map<
+    string,
+    {el: HTMLAudioElement; gainNode: GainNode}
+  >();
   for (const ac of audioClips) {
     const el = document.createElement('audio');
     el.crossOrigin = 'anonymous';
@@ -228,7 +233,7 @@ export async function exportEditedVideo(
     clipGain.gain.value = Math.max(0, Math.min(1.5, ac.volume ?? 1));
     srcNode.connect(clipGain);
     clipGain.connect(audioFx.musicInputGain);
-    audioClipElements.set(ac.id, el);
+    audioClipElements.set(ac.id, {el, gainNode: clipGain});
   }
 
   // Optional custom BG replacement asset element
@@ -316,7 +321,7 @@ export async function exportEditedVideo(
         // ignore
       }
     });
-    audioClipElements.forEach((a) => {
+    audioClipElements.forEach(({el: a}) => {
       try {
         a.pause();
         a.removeAttribute('src');
@@ -471,17 +476,31 @@ export async function exportEditedVideo(
         }
       }
 
-      // Sync all active audio & SFX clips simultaneously
+      // Sync all active audio & SFX clips simultaneously with Fade In / Fade Out envelopes
       for (const ac of audioClips) {
-        const el = audioClipElements.get(ac.id);
-        if (!el) continue;
+        const entry = audioClipElements.get(ac.id);
+        if (!entry) continue;
+        const {el, gainNode} = entry;
         const dur = getAudioClipDuration(ac);
         const active =
           currentTimelineTime >= ac.startTime &&
           currentTimelineTime < ac.startTime + dur;
         if (active) {
-          const targetAudioTime =
-            ac.trimStart + (currentTimelineTime - ac.startTime);
+          const elapsed = Math.max(0, currentTimelineTime - ac.startTime);
+          const remaining = Math.max(0, dur - elapsed);
+          const fadeIn = Math.max(0, Math.min(5, ac.fadeIn ?? 0));
+          const fadeOut = Math.max(0, Math.min(5, ac.fadeOut ?? 0));
+          let env = 1;
+          if (fadeIn > 0 && elapsed < fadeIn) env *= elapsed / fadeIn;
+          if (fadeOut > 0 && remaining < fadeOut) env *= remaining / fadeOut;
+          const baseVol = Math.max(0, Math.min(1.5, ac.volume ?? 1));
+          gainNode.gain.setTargetAtTime(
+            baseVol * Math.max(0, Math.min(1, env)),
+            audioCtx.currentTime,
+            0.015
+          );
+
+          const targetAudioTime = ac.trimStart + elapsed;
           if (Math.abs(el.currentTime - targetAudioTime) > 0.22) {
             try {
               el.currentTime = targetAudioTime;
@@ -543,6 +562,7 @@ export async function exportEditedVideo(
         mainBgReplacementEl: bgReplacementEl,
         precomputedMainMask: mainMask,
         effectItems,
+        beatTimes,
         overlayLayers,
         overlayElementsMap,
         precomputedOverlayMasks: overlayMasks,
@@ -576,7 +596,7 @@ export async function exportEditedVideo(
     onProgress(99, 'Finalizing video file...');
     mainVideoEl.pause();
     outgoingVideoEl.pause();
-    audioClipElements.forEach((a) => {
+    audioClipElements.forEach(({el: a}) => {
       if (!a.paused) a.pause();
     });
     if (recorder.state !== 'inactive') recorder.stop();

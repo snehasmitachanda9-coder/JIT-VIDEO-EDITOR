@@ -244,6 +244,22 @@ async function synthesizeSfxBuffer(kind: BuiltInSfxKind): Promise<AudioBuffer> {
   return ctx.startRendering();
 }
 
+const bufferCache = new Map<BuiltInSfxKind, AudioBuffer>();
+let sharedPreviewCtx: AudioContext | null = null;
+
+function getPreviewAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const Ctx =
+    window.AudioContext ||
+    (window as unknown as {webkitAudioContext?: typeof AudioContext})
+      .webkitAudioContext;
+  if (!Ctx) return null;
+  if (!sharedPreviewCtx || sharedPreviewCtx.state === 'closed') {
+    sharedPreviewCtx = new Ctx();
+  }
+  return sharedPreviewCtx;
+}
+
 export async function generateBuiltInSfxAsset(
   kind: BuiltInSfxKind
 ): Promise<GeneratedSfxAsset> {
@@ -251,6 +267,7 @@ export async function generateBuiltInSfxAsset(
   if (cached) return cached;
 
   const buffer = await synthesizeSfxBuffer(kind);
+  bufferCache.set(kind, buffer);
   const wavBlob = encodeWavFromAudioBuffer(buffer);
   const url = URL.createObjectURL(wavBlob);
   const asset: GeneratedSfxAsset = {
@@ -263,6 +280,27 @@ export async function generateBuiltInSfxAsset(
 }
 
 export async function playSfxPreview(kind: BuiltInSfxKind): Promise<void> {
+  const ctx = getPreviewAudioContext();
+  if (ctx) {
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
+    let buffer = bufferCache.get(kind);
+    if (!buffer) {
+      buffer = await synthesizeSfxBuffer(kind);
+      bufferCache.set(kind, buffer);
+      void generateBuiltInSfxAsset(kind).catch(() => {});
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.85;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(0);
+    return;
+  }
+
   const asset = await generateBuiltInSfxAsset(kind);
   const audio = new Audio(asset.url);
   audio.volume = 0.85;

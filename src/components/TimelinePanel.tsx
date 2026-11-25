@@ -28,6 +28,7 @@ import type {
   TimelineVideoClip,
   TransitionType,
 } from '../types/editor';
+import {TRANSITION_OPTIONS} from '../utils/effectCatalog';
 import {formatTime} from '../utils/formatTime';
 import {
   computeVideoTimelineSegments,
@@ -45,6 +46,7 @@ interface TimelinePanelProps {
   currentTime: number;
   totalDuration: number;
   playbackSpeed: number;
+  beatTimes?: number[];
   onSelectItem: (item: SelectedTimelineItem) => void;
   onSeek: (time: number) => void;
   onSplitSelected: () => void;
@@ -57,13 +59,6 @@ interface TimelinePanelProps {
   onUpdateAudioClip: (id: string, patch: Partial<TimelineAudioClip>) => void;
   onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
 }
-
-const TRANSITION_OPTIONS: Array<{id: TransitionType; label: string}> = [
-  {id: 'none', label: 'None'},
-  {id: 'crossfade', label: 'Crossfade'},
-  {id: 'slide-left', label: 'Slide Left'},
-  {id: 'zoom', label: 'Zoom'},
-];
 
 type DragOperation =
   | {kind: 'playhead'}
@@ -183,6 +178,7 @@ export function TimelinePanel({
   currentTime,
   totalDuration,
   playbackSpeed,
+  beatTimes = [],
   onSelectItem,
   onSeek,
   onSplitSelected,
@@ -512,8 +508,8 @@ export function TimelinePanel({
               <label className="inline-flex items-center gap-1 text-zinc-300">
                 <input
                   type="range"
-                  min={0.5}
-                  max={2.0}
+                  min={0.3}
+                  max={2.5}
                   step={0.1}
                   value={editingTransitionClip.transitionIn.duration}
                   onChange={(e) =>
@@ -580,7 +576,10 @@ export function TimelinePanel({
       {/* Scrollable 5-Track Area */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Sticky Left Track Labels */}
-        <div className="w-24 shrink-0 border-r border-zinc-800/80 bg-[#0F1217] flex flex-col">
+        <div
+          onPointerDown={() => onSelectItem(null)}
+          className="w-24 shrink-0 border-r border-zinc-800/80 bg-[#0F1217] flex flex-col"
+        >
           <div className="h-5 border-b border-zinc-800/80 px-2.5 flex items-center text-[10px] font-mono text-zinc-500">
             Time
           </div>
@@ -611,16 +610,26 @@ export function TimelinePanel({
         {/* Horizontal Timeline Viewport */}
         <div
           className="flex-1 overflow-x-auto overflow-y-hidden bg-[#0B0D10] relative"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) {
+              onSelectItem(null);
+            }
+          }}
           onPointerMove={handleGlobalPointerMove}
           onPointerUp={handleGlobalPointerUp}
           onPointerCancel={handleGlobalPointerUp}
         >
           <div
             ref={trackContainerRef}
+            onPointerDown={(e) => {
+              if (e.target === e.currentTarget) {
+                onSelectItem(null);
+              }
+            }}
             className="relative h-full flex flex-col"
             style={{width: trackWidthPx}}
           >
-            {/* Time Ruler */}
+            {/* Time Ruler + Beat Markers */}
             <div
               onPointerDown={handleRulerPointerDown}
               className="h-5 shrink-0 border-b border-zinc-800/80 bg-[#101319] relative cursor-ew-resize"
@@ -636,6 +645,21 @@ export function TimelinePanel({
                   </span>
                 </div>
               ))}
+              {beatTimes.map((bt, idx) => (
+                <button
+                  key={`beat-tick-${idx}`}
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onSeek(bt);
+                  }}
+                  title={`Beat #${idx + 1} (${formatTime(bt)}) — Click to jump`}
+                  style={{left: bt * pxPerSecond}}
+                  className="absolute bottom-0 -translate-x-1/2 w-2 h-2.5 flex items-end justify-center group z-10"
+                >
+                  <span className="w-1.5 h-1.5 rotate-45 bg-cyan-400 group-hover:bg-cyan-200 shadow-[0_0_5px_rgba(34,211,238,0.8)]" />
+                </button>
+              ))}
             </div>
 
             {/* 5 Tracks Grid */}
@@ -648,6 +672,13 @@ export function TimelinePanel({
                 }
               }}
             >
+              {beatTimes.map((bt, idx) => (
+                <div
+                  key={`beat-line-${idx}`}
+                  style={{left: bt * pxPerSecond}}
+                  className="absolute top-0 bottom-0 w-px border-l border-dashed border-cyan-400/25 pointer-events-none z-0"
+                />
+              ))}
               {/* Track 1: Main Video + Freeze Frames + Transition Seams */}
               <div
                 className="border-b border-zinc-800/60 relative flex items-center"
@@ -677,7 +708,7 @@ export function TimelinePanel({
                       idx > 0 && seg.clip.transitionIn.type !== 'none';
 
                     return (
-                      <div key={seg.clip.id}>
+                      <div key={seg.clip.id} className="contents">
                         <div
                           onPointerDown={(e) => {
                             e.stopPropagation();
@@ -838,20 +869,32 @@ export function TimelinePanel({
                         ? isSelected
                           ? 'border-cyan-300 bg-cyan-500/35 ring-1 ring-cyan-300/80 text-cyan-50'
                           : 'border-cyan-400/70 bg-cyan-600/30 hover:border-cyan-300 text-cyan-100'
-                        : ef.category === 'filter'
+                        : ef.category === 'party'
                           ? isSelected
-                            ? 'border-fuchsia-300 bg-fuchsia-500/35 ring-1 ring-fuchsia-300/80 text-fuchsia-50'
-                            : 'border-fuchsia-400/70 bg-fuchsia-600/30 hover:border-fuchsia-300 text-fuchsia-100'
-                          : isSelected
-                            ? 'border-violet-300 bg-violet-500/40 ring-1 ring-violet-300/80 text-white'
-                            : 'border-violet-400/70 bg-violet-600/35 hover:border-violet-300 text-violet-100';
+                            ? 'border-pink-300 bg-pink-500/35 ring-1 ring-pink-300/80 text-pink-50'
+                            : 'border-pink-400/70 bg-pink-600/30 hover:border-pink-300 text-pink-100'
+                          : ef.category === 'cinema'
+                            ? isSelected
+                              ? 'border-amber-300 bg-amber-500/35 ring-1 ring-amber-300/80 text-amber-50'
+                              : 'border-amber-400/70 bg-amber-600/30 hover:border-amber-300 text-amber-100'
+                            : ef.category === 'filter'
+                              ? isSelected
+                                ? 'border-fuchsia-300 bg-fuchsia-500/35 ring-1 ring-fuchsia-300/80 text-fuchsia-50'
+                                : 'border-fuchsia-400/70 bg-fuchsia-600/30 hover:border-fuchsia-300 text-fuchsia-100'
+                              : isSelected
+                                ? 'border-violet-300 bg-violet-500/40 ring-1 ring-violet-300/80 text-white'
+                                : 'border-violet-400/70 bg-violet-600/35 hover:border-violet-300 text-violet-100';
 
                     const handleColor =
                       ef.category === 'motion'
                         ? 'bg-cyan-400/60 hover:bg-cyan-300'
-                        : ef.category === 'filter'
-                          ? 'bg-fuchsia-400/60 hover:bg-fuchsia-300'
-                          : 'bg-violet-400/60 hover:bg-violet-300';
+                        : ef.category === 'party'
+                          ? 'bg-pink-400/60 hover:bg-pink-300'
+                          : ef.category === 'cinema'
+                            ? 'bg-amber-400/60 hover:bg-amber-300'
+                            : ef.category === 'filter'
+                              ? 'bg-fuchsia-400/60 hover:bg-fuchsia-300'
+                              : 'bg-violet-400/60 hover:bg-violet-300';
 
                     return (
                       <div

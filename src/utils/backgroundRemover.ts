@@ -21,6 +21,7 @@ declare global {
 
 let scriptLoadPromise: Promise<void> | null = null;
 let segmenterPromise: Promise<MediaPipeSelfieSegmentation> | null = null;
+let mediaPipeUnavailable = false;
 let pendingResolve: ((mask: CanvasImageSource) => void) | null = null;
 let queueTail: Promise<void> = Promise.resolve();
 let isBusy = false;
@@ -33,6 +34,9 @@ function loadSelfieSegmentationScript(): Promise<void> {
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('Window unavailable'));
   }
+  if (mediaPipeUnavailable) {
+    return Promise.reject(new Error('MediaPipe unavailable; using canvas fallback'));
+  }
   if (window.SelfieSegmentation) {
     return Promise.resolve();
   }
@@ -44,7 +48,12 @@ function loadSelfieSegmentationScript(): Promise<void> {
     const script = document.createElement('script');
     script.src = '/mediapipe/selfie_segmentation/selfie_segmentation.js';
     script.async = true;
+    const timeout = window.setTimeout(() => {
+      scriptLoadPromise = null;
+      reject(new Error('Timed out loading MediaPipe SelfieSegmentation script.'));
+    }, 6000);
     script.onload = () => {
+      window.clearTimeout(timeout);
       if (window.SelfieSegmentation) {
         resolve();
       } else {
@@ -52,6 +61,7 @@ function loadSelfieSegmentationScript(): Promise<void> {
       }
     };
     script.onerror = () => {
+      window.clearTimeout(timeout);
       scriptLoadPromise = null;
       reject(new Error('Failed to load MediaPipe SelfieSegmentation script.'));
     };
@@ -62,30 +72,39 @@ function loadSelfieSegmentationScript(): Promise<void> {
 }
 
 async function getSegmenter(): Promise<MediaPipeSelfieSegmentation> {
+  if (mediaPipeUnavailable) {
+    throw new Error('MediaPipe unavailable');
+  }
   if (segmenterPromise) return segmenterPromise;
 
   segmenterPromise = (async () => {
-    await loadSelfieSegmentationScript();
-    const Ctor = window.SelfieSegmentation;
-    if (!Ctor) {
-      throw new Error('SelfieSegmentation constructor unavailable');
-    }
-    const instance = new Ctor({
-      locateFile: (file: string) => `/mediapipe/selfie_segmentation/${file}`,
-    });
-    instance.setOptions({
-      modelSelection: 1,
-      selfieMode: false,
-    });
-    instance.onResults((results) => {
-      if (pendingResolve) {
-        const res = pendingResolve;
-        pendingResolve = null;
-        res(results.segmentationMask);
+    try {
+      await loadSelfieSegmentationScript();
+      const Ctor = window.SelfieSegmentation;
+      if (!Ctor) {
+        throw new Error('SelfieSegmentation constructor unavailable');
       }
-    });
-    await instance.initialize();
-    return instance;
+      const instance = new Ctor({
+        locateFile: (file: string) => `/mediapipe/selfie_segmentation/${file}`,
+      });
+      instance.setOptions({
+        modelSelection: 1,
+        selfieMode: false,
+      });
+      instance.onResults((results) => {
+        if (pendingResolve) {
+          const res = pendingResolve;
+          pendingResolve = null;
+          res(results.segmentationMask);
+        }
+      });
+      await instance.initialize();
+      return instance;
+    } catch (err) {
+      mediaPipeUnavailable = true;
+      segmenterPromise = null;
+      throw err;
+    }
   })();
 
   return segmenterPromise;
@@ -110,6 +129,128 @@ function getSourceDimensions(source: SegmentationSource): {w: number; h: number}
   return {w: source.width, h: source.height};
 }
 
+/**
+ * Safe HTML5 Canvas foreground/person fallback mask when MediaPipe WASM/CDN is unavailable.
+ * Combines border background color separation (YCbCr + luminance) with a soft portrait silhouette prior.
+ */
+function buildCanvasFallbackMask(
+  key: string,
+  source: SegmentationSource,
+  w: number,
+  h: number
+): HTMLCanvasElement | null {
+  if (typeof document === 'undefined' || w <= 0 || h <= 0) return null;
+
+  const maxFallbackDim = 160;
+  const scale = Math.min(1, maxFallbackDim / Math.max(w, h));
+  const fw = Math.max(24, Math.round(w * scale));
+  const fh = Math.max(24, Math.round(h * scale));
+
+  const sampleCanvas = getScratchCanvasInternal('fallback-sample');
+  if (sampleCanvas.width !== fw || sampleCanvas.height !== fh) {
+    sampleCanvas.width = fw;
+    sampleCanvas.height = fh;
+  }
+  const sctx = sampleCanvas.getContext('2d', {willReadFrequently: true});
+  if (!sctx) return null;
+
+  try {
+    sctx.clearRect(0, 0, fw, fh);
+    sctx.drawImage(source, 0, 0, fw, fh);
+    const img = sctx.getImageData(0, 0, fw, fh);
+    const px = img.data;
+
+    // Estimate background color from outer top/left/right border pixels
+    let sumY = 0;
+    let sumCb = 0;
+    let sumCr = 0;
+    let count = 0;
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        if (y < 3 || x < 3 || x >= fw - 3) {
+          const i = (y * fw + x) * 4;
+          const r = px[i];
+          const g = px[i + 1];
+          const b = px[i + 2];
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+          const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+          sumY += lum;
+          sumCb += cb;
+          sumCr += cr;
+          count++;
+        }
+      }
+    }
+
+    const bgY = count > 0 ? sumY / count : 128;
+    const bgCb = count > 0 ? sumCb / count : 128;
+    const bgCr = count > 0 ? sumCr / count : 128;
+
+    const maskData = new Uint8ClampedArray(px.length);
+    for (let y = 0; y < fh; y++) {
+      const ny = (y / fh - 0.54) / 0.46; // centered slightly lower for torso + head
+      for (let x = 0; x < fw; x++) {
+        const nx = (x / fw - 0.5) / 0.36;
+        const radialDist = Math.sqrt(nx * nx + ny * ny);
+        const prior = Math.max(0, Math.min(1, 1.32 - radialDist * 0.85));
+
+        const i = (y * fw + x) * 4;
+        const r = px[i];
+        const g = px[i + 1];
+        const b = px[i + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+
+        const colorDist = Math.sqrt(
+          (lum - bgY) * (lum - bgY) * 0.22 +
+            (cb - bgCb) * (cb - bgCb) +
+            (cr - bgCr) * (cr - bgCr)
+        );
+        const fgLikelihood = Math.min(1, colorDist / 38);
+        const score = prior * 0.62 + fgLikelihood * 0.55;
+        const alpha = Math.max(
+          0,
+          Math.min(255, Math.round(((score - 0.42) / 0.28) * 255))
+        );
+
+        maskData[i] = 255;
+        maskData[i + 1] = 255;
+        maskData[i + 2] = 255;
+        maskData[i + 3] = alpha;
+      }
+    }
+
+    let cached = maskCache.get(key);
+    if (!cached) {
+      cached = document.createElement('canvas');
+      maskCache.set(key, cached);
+    }
+    if (cached.width !== fw || cached.height !== fh) {
+      cached.width = fw;
+      cached.height = fh;
+    }
+    const mctx = cached.getContext('2d');
+    if (mctx) {
+      mctx.putImageData(new ImageData(maskData, fw, fh), 0, 0);
+    }
+    return cached;
+  } catch {
+    return maskCache.get(key) ?? null;
+  }
+}
+
+const internalScratch = new Map<string, HTMLCanvasElement>();
+function getScratchCanvasInternal(name: string): HTMLCanvasElement {
+  let c = internalScratch.get(name);
+  if (!c) {
+    c = document.createElement('canvas');
+    internalScratch.set(name, c);
+  }
+  return c;
+}
+
 function runSegmentationInternal(
   key: string,
   source: SegmentationSource
@@ -117,6 +258,10 @@ function runSegmentationInternal(
   const {w, h} = getSourceDimensions(source);
   if (w <= 0 || h <= 0 || !inputCanvas) {
     return Promise.resolve(null);
+  }
+
+  if (mediaPipeUnavailable) {
+    return Promise.resolve(buildCanvasFallbackMask(key, source, w, h));
   }
 
   const task = queueTail.then(async () => {
@@ -133,7 +278,7 @@ function runSegmentationInternal(
         inputCanvas.height = sh;
       }
       const ictx = inputCanvas.getContext('2d');
-      if (!ictx) return null;
+      if (!ictx) return buildCanvasFallbackMask(key, source, w, h);
       ictx.clearRect(0, 0, sw, sh);
       ictx.drawImage(source, 0, 0, sw, sh);
 
@@ -169,7 +314,7 @@ function runSegmentationInternal(
       }
       return cached;
     } catch {
-      return maskCache.get(key) ?? null;
+      return buildCanvasFallbackMask(key, source, w, h);
     } finally {
       isBusy = false;
       const notify = pendingNotifyAfterBusy;
@@ -199,6 +344,15 @@ export function getCachedMaskOrSchedule(
 ): HTMLCanvasElement | null {
   const now = performance.now();
   const last = lastRequestStamp.get(key) ?? 0;
+
+  if (mediaPipeUnavailable) {
+    if (now - last > 32) {
+      lastRequestStamp.set(key, now);
+      const {w, h} = getSourceDimensions(source);
+      return buildCanvasFallbackMask(key, source, w, h);
+    }
+    return maskCache.get(key) ?? null;
+  }
 
   if (isBusy) {
     if (onUpdated) {
@@ -295,43 +449,47 @@ export function applyChromaKeyToCanvas(
   ctx.clearRect(0, 0, pw, ph);
   ctx.drawImage(source, 0, 0, pw, ph);
 
-  const imgData = ctx.getImageData(0, 0, pw, ph);
-  const data = imgData.data;
+  try {
+    const imgData = ctx.getImageData(0, 0, pw, ph);
+    const data = imgData.data;
 
-  const [kr, kg, kb] = hexToRgb(keyColorHex);
-  const [keyCb, keyCr] = rgbToCbCr(kr, kg, kb);
-  const isGreenish = kg > kr && kg > kb;
+    const [kr, kg, kb] = hexToRgb(keyColorHex);
+    const [keyCb, keyCr] = rgbToCbCr(kr, kg, kb);
+    const isGreenish = kg > kr && kg > kb;
 
-  // Map normalized similarity/smoothness to CbCr distance space (0..180)
-  const simDist = similarity * 145;
-  const smoothDist = Math.max(2, smoothness * 145);
+    // Map normalized similarity/smoothness to CbCr distance space (0..180)
+    const simDist = similarity * 145;
+    const smoothDist = Math.max(2, smoothness * 145);
 
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
 
-    const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
-    const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+      const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+      const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
 
-    const dCb = cb - keyCb;
-    const dCr = cr - keyCr;
-    const dist = Math.sqrt(dCb * dCb + dCr * dCr);
+      const dCb = cb - keyCb;
+      const dCr = cr - keyCr;
+      const dist = Math.sqrt(dCb * dCb + dCr * dCr);
 
-    if (dist < simDist) {
-      data[i + 3] = 0;
-    } else if (dist < simDist + smoothDist) {
-      const alphaFactor = (dist - simDist) / smoothDist;
-      data[i + 3] = Math.round(data[i + 3] * alphaFactor);
-      if (isGreenish && g > Math.max(r, b)) {
-        data[i + 1] = Math.round(
-          g * alphaFactor + Math.max(r, b) * (1 - alphaFactor)
-        );
+      if (dist < simDist) {
+        data[i + 3] = 0;
+      } else if (dist < simDist + smoothDist) {
+        const alphaFactor = (dist - simDist) / smoothDist;
+        data[i + 3] = Math.round(data[i + 3] * alphaFactor);
+        if (isGreenish && g > Math.max(r, b)) {
+          data[i + 1] = Math.round(
+            g * alphaFactor + Math.max(r, b) * (1 - alphaFactor)
+          );
+        }
       }
     }
-  }
 
-  ctx.putImageData(imgData, 0, 0);
+    ctx.putImageData(imgData, 0, 0);
+  } catch {
+    // Keep drawn source frame if pixel access is blocked
+  }
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   type AudioAsset,
   type AudioSettings,
   type BackgroundRemovalConfig,
+  type BeatSyncAnalysis,
   type BuiltInSfxKind,
   type ClipTransition,
   type FilterPreset,
@@ -39,6 +40,7 @@ import {
   type VideoFitMode,
 } from './types/editor';
 import {clearMaskCache} from './utils/backgroundRemover';
+import {analyzeAudioClipBeats} from './utils/beatAnalyzer';
 import {FILTER_PRESET_VALUES} from './utils/canvasRenderer';
 import {
   getEffectCatalogEntry,
@@ -167,6 +169,11 @@ export default function App() {
   // Right Inspector Tab
   const [activeRightTab, setActiveRightTab] = useState<RightPanelTab>('motion');
 
+  // Audio Beat Sync Analysis
+  const [beatSync, setBeatSync] = useState<BeatSyncAnalysis | null>(null);
+  const [beatAnalyzing, setBeatAnalyzing] = useState(false);
+  const [beatError, setBeatError] = useState<string | null>(null);
+
   // Export Modal State
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -232,6 +239,8 @@ export default function App() {
     }
   }, [totalDuration, currentTime]);
 
+  const selectedVideoClipId =
+    selectedItem?.track === 'video' ? selectedItem.id : null;
   const selectedOverlayId =
     selectedItem?.track === 'overlay' ? selectedItem.id : null;
   const selectedTextId =
@@ -250,6 +259,23 @@ export default function App() {
         : null,
     [selectedItem, audioClips]
   );
+  const selectedOverlay = useMemo(
+    () =>
+      selectedOverlayId
+        ? overlayLayers.find((o) => o.id === selectedOverlayId) ?? null
+        : null,
+    [selectedOverlayId, overlayLayers]
+  );
+  const beatTimes = useMemo(() => beatSync?.beatTimes ?? [], [beatSync]);
+
+  const handleTabChange = useCallback((tab: RightPanelTab) => {
+    setActiveRightTab(tab);
+    setSelectedItem((prev) => (prev?.track === 'effect' ? null : prev));
+  }, []);
+
+  const handleCloseEffectInspector = useCallback(() => {
+    setSelectedItem((prev) => (prev?.track === 'effect' ? null : prev));
+  }, []);
 
   // Upload Videos & Images
   const handleUploadMediaFiles = useCallback(
@@ -681,12 +707,38 @@ export default function App() {
     [currentTime]
   );
 
-  // Effects Track (Weather, Animated Motion, Glitch, Color Filters)
+  const handleAnalyzeBeats = useCallback(
+    async (clipId: string) => {
+      const targetClip = audioClips.find((c) => c.id === clipId);
+      if (!targetClip) return;
+      setBeatAnalyzing(true);
+      setBeatError(null);
+      try {
+        const analysis = await analyzeAudioClipBeats(targetClip);
+        setBeatSync(analysis);
+      } catch (err) {
+        setBeatError(
+          err instanceof Error ? err.message : 'Unable to analyze audio beats.'
+        );
+      } finally {
+        setBeatAnalyzing(false);
+      }
+    },
+    [audioClips]
+  );
+
+  const handleClearBeats = useCallback(() => {
+    setBeatSync(null);
+    setBeatError(null);
+  }, []);
+
+  // Effects Track (Weather, Animated Motion, Party/Cinema VFX, Color Filters)
   const handleAddTimelineEffect = useCallback(
     (type: TimelineEffectType) => {
       const entry = getEffectCatalogEntry(type);
       const start = Math.max(0, Number(currentTime.toFixed(2)));
       const end = Number((start + 4).toFixed(2));
+      const isZoom = type === 'zoom-in' || type === 'zoom-out';
       const item: TimelineEffectItem = {
         id: makeId('effect'),
         type,
@@ -697,6 +749,13 @@ export default function App() {
         opacity: entry.defaultOpacity,
         startTime: start,
         endTime: end,
+        ...(isZoom
+          ? {
+              targetZoom: 165,
+              zoomCenterX: 50,
+              zoomCenterY: 50,
+            }
+          : {}),
       };
       setEffectItems((prev) => [...prev, item]);
       setSelectedItem({track: 'effect', id: item.id});
@@ -1117,11 +1176,14 @@ export default function App() {
       }
     } else if (selectedItem.track === 'audio') {
       setAudioClips((prev) => prev.filter((c) => c.id !== selectedItem.id));
+      if (beatSync?.clipId === selectedItem.id) {
+        setBeatSync(null);
+      }
     } else if (selectedItem.track === 'text') {
       setTextOverlays((prev) => prev.filter((t) => t.id !== selectedItem.id));
     }
     setSelectedItem(null);
-  }, [selectedItem, bgTargetKey]);
+  }, [selectedItem, bgTargetKey, beatSync]);
 
   const handleTrimVideoClip = useCallback(
     (id: string, trimStart: number, trimEnd: number) => {
@@ -1219,6 +1281,7 @@ export default function App() {
         motionTransform,
         mainBgRemoval,
         audioSettings,
+        beatTimes,
         onProgress: (pct, phase) => {
           setExportProgress(pct);
           setExportPhase(phase);
@@ -1264,6 +1327,7 @@ export default function App() {
     motionTransform,
     mainBgRemoval,
     audioSettings,
+    beatTimes,
     isExporting,
     exportDownloadUrl,
   ]);
@@ -1324,6 +1388,7 @@ export default function App() {
           motionTransform={motionTransform}
           mainBgRemoval={mainBgRemoval}
           audioSettings={audioSettings}
+          beatTimes={beatTimes}
           currentTime={currentTime}
           totalDuration={totalDuration}
           isPlaying={isPlaying}
@@ -1349,10 +1414,15 @@ export default function App() {
             isCollapsed={rightCollapsed}
             onToggleCollapse={() => setRightCollapsed((c) => !c)}
             activeTab={activeRightTab}
-            onTabChange={setActiveRightTab}
+            onTabChange={handleTabChange}
+            onCloseEffectInspector={handleCloseEffectInspector}
             motionTransform={motionTransform}
             onUpdateMotionTransform={handleUpdateMotionTransform}
             onResetMotionTransform={handleResetMotionTransform}
+            videoClips={videoClips}
+            selectedVideoClipId={selectedVideoClipId}
+            onSelectVideoClip={(id) => setSelectedItem({track: 'video', id})}
+            onUpdateClipTransition={handleUpdateClipTransition}
             effectItems={effectItems}
             selectedEffect={selectedEffect}
             onSelectEffectItem={handleSelectEffectItem}
@@ -1371,11 +1441,13 @@ export default function App() {
             onUpdateMainBgRemoval={handleUpdateMainBgRemoval}
             onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
             onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
+            selectedOverlay={selectedOverlay}
             onAddStickerOverlay={handleAddStickerOverlay}
             onAddJitLogoWatermark={(corner) => {
               void handleAddJitLogoWatermark(corner);
             }}
             onSelectOverlay={handleSelectOverlay}
+            onUpdateOverlay={handleUpdateOverlay}
             onDeleteOverlay={handleDeleteOverlay}
             textOverlays={textOverlays}
             selectedTextId={selectedTextId}
@@ -1386,8 +1458,20 @@ export default function App() {
             onUpdateTextOverlay={handleUpdateTextOverlay}
             onDeleteTextOverlay={handleDeleteTextOverlay}
             audioAssets={audioAssets}
+            audioClips={audioClips}
             audioSettings={audioSettings}
             selectedAudioClip={selectedAudioClip}
+            beatSync={beatSync}
+            beatAnalyzing={beatAnalyzing}
+            beatError={beatError}
+            onAnalyzeBeats={(clipId) => {
+              void handleAnalyzeBeats(clipId);
+            }}
+            onClearBeats={handleClearBeats}
+            onSeek={(time) => {
+              setIsPlaying(false);
+              setCurrentTime(time);
+            }}
             onUploadAudioFiles={handleUploadAudioFiles}
             onAddAudioToTimeline={handleAddAudioToTimeline}
             onUpdateAudioClip={handleUpdateAudioClip}
@@ -1417,6 +1501,7 @@ export default function App() {
           currentTime={currentTime}
           totalDuration={totalDuration}
           playbackSpeed={audioSettings.playbackSpeed}
+          beatTimes={beatTimes}
           onSelectItem={(item) => {
             setSelectedItem(item);
             if (item?.track === 'overlay') {

@@ -65,6 +65,7 @@ interface PreviewCanvasPlayerProps {
   motionTransform: MotionTransform;
   mainBgRemoval: BackgroundRemovalConfig;
   audioSettings: AudioSettings;
+  beatTimes?: number[];
   currentTime: number;
   totalDuration: number;
   isPlaying: boolean;
@@ -130,6 +131,7 @@ export function PreviewCanvasPlayer({
   motionTransform,
   mainBgRemoval,
   audioSettings,
+  beatTimes = [],
   currentTime,
   totalDuration,
   isPlaying,
@@ -163,6 +165,7 @@ export function PreviewCanvasPlayer({
         url: string;
         connected: boolean;
         gainNode: GainNode | null;
+        clipVolume: number;
       }
     >
   >(new Map());
@@ -363,6 +366,7 @@ export function PreviewCanvasPlayer({
         try {
           const src = graph.ctx.createMediaElementSource(entry.el);
           const gainNode = graph.ctx.createGain();
+          gainNode.gain.value = entry.clipVolume;
           src.connect(gainNode);
           gainNode.connect(graph.musicInputGain);
           entry.connected = true;
@@ -406,6 +410,7 @@ export function PreviewCanvasPlayer({
     }
 
     for (const clip of audioClips) {
+      const clipVol = Math.max(0, Math.min(1.5, clip.volume ?? 1));
       const existing = pool.get(clip.id);
       if (!existing) {
         const el = document.createElement('audio');
@@ -417,10 +422,14 @@ export function PreviewCanvasPlayer({
           url: clip.url,
           connected: false,
           gainNode: null,
+          clipVolume: clipVol,
         });
-      } else if (existing.url !== clip.url) {
-        existing.url = clip.url;
-        existing.el.src = clip.url;
+      } else {
+        existing.clipVolume = clipVol;
+        if (existing.url !== clip.url) {
+          existing.url = clip.url;
+          existing.el.src = clip.url;
+        }
       }
     }
 
@@ -431,7 +440,7 @@ export function PreviewCanvasPlayer({
     for (const clip of audioClips) {
       const entry = pool.get(clip.id);
       if (!entry) continue;
-      const clipVol = Math.max(0, Math.min(1.5, clip.volume ?? 1));
+      const clipVol = entry.clipVolume;
       if (entry.gainNode && audioGraphRef.current) {
         entry.gainNode.gain.setTargetAtTime(
           clipVol,
@@ -590,6 +599,7 @@ export function PreviewCanvasPlayer({
         mainBgRemoval,
         mainBgReplacementEl: bgReplacementElRef.current,
         effectItems,
+        beatTimes,
         overlayLayers,
         overlayElementsMap: overlayElementsRef.current,
         textOverlays,
@@ -613,6 +623,7 @@ export function PreviewCanvasPlayer({
       motionTransform,
       mainBgRemoval,
       effectItems,
+      beatTimes,
       overlayLayers,
       textOverlays,
       selectedOverlayId,
@@ -731,11 +742,20 @@ export function PreviewCanvasPlayer({
           }
         }
       } else {
-        if (videoEl.paused && !videoEl.ended) {
+        if (videoEl.paused) {
           if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.15) {
-            videoEl.currentTime = expectedSourceTime;
+            try {
+              videoEl.currentTime = Math.min(
+                seg.clip.trimEnd,
+                Math.max(seg.clip.trimStart, expectedSourceTime)
+              );
+            } catch {
+              // ignore
+            }
           }
-          void videoEl.play().catch(() => {});
+          if (expectedSourceTime < seg.clip.trimEnd - 0.05) {
+            void videoEl.play().catch(() => {});
+          }
         }
       }
     },
@@ -793,7 +813,30 @@ export function PreviewCanvasPlayer({
           continue;
         }
 
-        const targetTime = ac.trimStart + (timelineTime - ac.startTime);
+        const elapsed = Math.max(0, timelineTime - ac.startTime);
+        const remaining = Math.max(0, dur - elapsed);
+        const fadeIn = Math.max(0, Math.min(5, ac.fadeIn ?? 0));
+        const fadeOut = Math.max(0, Math.min(5, ac.fadeOut ?? 0));
+        let env = 1;
+        if (fadeIn > 0 && elapsed < fadeIn) env *= elapsed / fadeIn;
+        if (fadeOut > 0 && remaining < fadeOut) env *= remaining / fadeOut;
+        const effectiveVol =
+          entry.clipVolume * Math.max(0, Math.min(1, env));
+
+        if (entry.gainNode && audioGraphRef.current) {
+          entry.gainNode.gain.setTargetAtTime(
+            effectiveVol,
+            audioGraphRef.current.ctx.currentTime,
+            0.015
+          );
+        } else {
+          audio.muted = audioSettings.musicMuted;
+          audio.volume = audioSettings.musicMuted
+            ? 0
+            : Math.min(1, audioSettings.musicVolume * effectiveVol);
+        }
+
+        const targetTime = ac.trimStart + elapsed;
         if (audio.readyState < 1) {
           audio.addEventListener(
             'loadedmetadata',
@@ -821,7 +864,7 @@ export function PreviewCanvasPlayer({
         }
       }
     },
-    [audioClips]
+    [audioClips, audioSettings.musicMuted, audioSettings.musicVolume]
   );
 
   useEffect(() => {
@@ -872,15 +915,24 @@ export function PreviewCanvasPlayer({
         videoA.getAttribute('data-clip-url') === currentSeg.clip.url &&
         videoA.readyState >= 2
       ) {
-        if (videoA.paused && !videoA.ended) {
+        if (videoA.paused) {
           const expectedSource =
             currentSeg.clip.trimStart +
             Math.max(0, playTimeRef.current - currentSeg.timelineStart) *
               audioSettings.playbackSpeed;
           if (Math.abs(videoA.currentTime - expectedSource) > 0.12) {
-            videoA.currentTime = expectedSource;
+            try {
+              videoA.currentTime = Math.min(
+                currentSeg.clip.trimEnd,
+                Math.max(currentSeg.clip.trimStart, expectedSource)
+              );
+            } catch {
+              // ignore
+            }
           }
-          void videoA.play().catch(() => {});
+          if (expectedSource < currentSeg.clip.trimEnd - 0.05) {
+            void videoA.play().catch(() => {});
+          }
         }
 
         const elapsedInClip =
@@ -1338,17 +1390,16 @@ export function PreviewCanvasPlayer({
                 max={Math.max(0, selectedOverlay.endTime - 0.2)}
                 step={0.1}
                 value={Number(selectedOverlay.startTime.toFixed(1))}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  if (!Number.isFinite(val)) return;
                   onUpdateOverlay(selectedOverlay.id, {
                     startTime: Math.max(
                       0,
-                      Math.min(
-                        selectedOverlay.endTime - 0.2,
-                        Number(e.target.value)
-                      )
+                      Math.min(selectedOverlay.endTime - 0.2, val)
                     ),
-                  })
-                }
+                  });
+                }}
                 className="w-12 rounded border border-zinc-700 bg-[#090B0E] px-1.5 py-0.5 text-[11px] font-mono tabular-nums text-zinc-200"
               />
               <span>End</span>
@@ -1357,14 +1408,13 @@ export function PreviewCanvasPlayer({
                 min={selectedOverlay.startTime + 0.2}
                 step={0.1}
                 value={Number(selectedOverlay.endTime.toFixed(1))}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  if (!Number.isFinite(val)) return;
                   onUpdateOverlay(selectedOverlay.id, {
-                    endTime: Math.max(
-                      selectedOverlay.startTime + 0.2,
-                      Number(e.target.value)
-                    ),
-                  })
-                }
+                    endTime: Math.max(selectedOverlay.startTime + 0.2, val),
+                  });
+                }}
                 className="w-12 rounded border border-zinc-700 bg-[#090B0E] px-1.5 py-0.5 text-[11px] font-mono tabular-nums text-zinc-200"
               />
             </div>

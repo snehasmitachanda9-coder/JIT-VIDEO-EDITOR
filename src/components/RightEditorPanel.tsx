@@ -24,6 +24,7 @@ import {
   Volume2,
   VolumeX,
   Wind,
+  X,
 } from 'lucide-react';
 import type {
   AIStudioCaption,
@@ -35,10 +36,14 @@ import type {
   BackgroundRemovalConfig,
   BackgroundRemovalMode,
   BackgroundReplacementType,
+  BeatSyncAnalysis,
   BuiltInSfxKind,
+  ClipTransition,
+  FaceAnchorPreset,
   FilterPreset,
   MediaAsset,
   MotionTransform,
+  OverlayAnimationPreset,
   OverlayLayerItem,
   RightPanelTab,
   StickerKind,
@@ -46,14 +51,20 @@ import type {
   TimelineAudioClip,
   TimelineEffectItem,
   TimelineEffectType,
+  TimelineVideoClip,
   VideoFilters,
+  VoiceChangerPreset,
   WeatherEffectType,
 } from '../types/editor';
 import {warmUpSelfieSegmentation} from '../utils/backgroundRemover';
 import {
+  EFFECT_CATALOG,
+  FACE_ANCHOR_POSITIONS,
   getEffectCatalogEntry,
   getEffectIntensityLabel,
   JIT_LOGO_URL,
+  OVERLAY_ANIMATION_OPTIONS,
+  TRANSITION_OPTIONS,
   WATERMARK_CORNER_POSITIONS,
   type WatermarkCorner,
 } from '../utils/effectCatalog';
@@ -66,10 +77,15 @@ interface RightEditorPanelProps {
   onToggleCollapse: () => void;
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
+  onCloseEffectInspector: () => void;
   // Motion & Transform + Timeline Effects tab
   motionTransform: MotionTransform;
   onUpdateMotionTransform: (patch: Partial<MotionTransform>) => void;
   onResetMotionTransform: () => void;
+  videoClips: TimelineVideoClip[];
+  selectedVideoClipId: string | null;
+  onSelectVideoClip: (id: string) => void;
+  onUpdateClipTransition: (clipId: string, transition: ClipTransition) => void;
   effectItems: TimelineEffectItem[];
   selectedEffect: TimelineEffectItem | null;
   onSelectEffectItem: (id: string) => void;
@@ -94,9 +110,11 @@ interface RightEditorPanelProps {
   ) => void;
   onUploadBackgroundReplacement: (file: File) => void;
   // Stickers & Face + JIT Watermark tab
+  selectedOverlay: OverlayLayerItem | null;
   onAddStickerOverlay: (kind: StickerKind) => void;
   onAddJitLogoWatermark: (corner: WatermarkCorner) => void;
   onSelectOverlay: (id: string) => void;
+  onUpdateOverlay: (id: string, patch: Partial<OverlayLayerItem>) => void;
   onDeleteOverlay: (id: string) => void;
   // Text tab
   textOverlays: TextOverlayItem[];
@@ -107,10 +125,17 @@ interface RightEditorPanelProps {
   onSelectTextOverlay: (id: string) => void;
   onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
   onDeleteTextOverlay: (id: string) => void;
-  // Audio & Speed + SFX tab
+  // Audio & Speed + SFX + Beat Sync tab
   audioAssets: AudioAsset[];
+  audioClips: TimelineAudioClip[];
   audioSettings: AudioSettings;
   selectedAudioClip: TimelineAudioClip | null;
+  beatSync: BeatSyncAnalysis | null;
+  beatAnalyzing: boolean;
+  beatError: string | null;
+  onAnalyzeBeats: (clipId: string) => void;
+  onClearBeats: () => void;
+  onSeek: (time: number) => void;
   onUploadAudioFiles: (files: FileList | File[]) => void;
   onAddAudioToTimeline: (asset: AudioAsset) => void;
   onUpdateAudioClip: (id: string, patch: Partial<TimelineAudioClip>) => void;
@@ -187,9 +212,14 @@ export function RightEditorPanel({
   onToggleCollapse,
   activeTab,
   onTabChange,
+  onCloseEffectInspector,
   motionTransform,
   onUpdateMotionTransform,
   onResetMotionTransform,
+  videoClips,
+  selectedVideoClipId,
+  onSelectVideoClip,
+  onUpdateClipTransition,
   effectItems,
   selectedEffect,
   onSelectEffectItem,
@@ -208,20 +238,30 @@ export function RightEditorPanel({
   onUpdateMainBgRemoval,
   onUpdateOverlayBgRemoval,
   onUploadBackgroundReplacement,
+  selectedOverlay,
   onAddStickerOverlay,
   onAddJitLogoWatermark,
   onSelectOverlay,
+  onUpdateOverlay,
   onDeleteOverlay,
   textOverlays,
   selectedTextId,
   totalDuration,
+  currentTime,
   onAddTextOverlay,
   onSelectTextOverlay,
   onUpdateTextOverlay,
   onDeleteTextOverlay,
   audioAssets,
+  audioClips,
   audioSettings,
   selectedAudioClip,
+  beatSync,
+  beatAnalyzing,
+  beatError,
+  onAnalyzeBeats,
+  onClearBeats,
+  onSeek,
   onUploadAudioFiles,
   onAddAudioToTimeline,
   onUpdateAudioClip,
@@ -254,6 +294,12 @@ export function RightEditorPanel({
 
   const selectedText =
     textOverlays.find((item) => item.id === selectedTextId) ?? null;
+
+  const transitionableClips = videoClips.slice(1);
+  const activeTransitionClip =
+    transitionableClips.find((c) => c.id === selectedVideoClipId) ??
+    transitionableClips[0] ??
+    null;
 
   const targetOverlay =
     bgTargetKey !== 'main'
@@ -494,9 +540,20 @@ export function RightEditorPanel({
                   Selected Effect on Timeline
                 </p>
               </div>
-              <span className="px-2 py-0.5 rounded bg-violet-500/20 border border-violet-500/40 text-[10px] font-mono tabular-nums text-violet-200 shrink-0">
-                {(selectedEffect.endTime - selectedEffect.startTime).toFixed(1)}s
-              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-2 py-0.5 rounded bg-violet-500/20 border border-violet-500/40 text-[10px] font-mono tabular-nums text-violet-200">
+                  {(selectedEffect.endTime - selectedEffect.startTime).toFixed(1)}s
+                </span>
+                <button
+                  type="button"
+                  onClick={onCloseEffectInspector}
+                  title="Close Effect Inspector"
+                  aria-label="Close Effect Inspector"
+                  className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
 
             {/* (a) Exact Start Time & End Time (sec) */}
@@ -568,7 +625,7 @@ export function RightEditorPanel({
               <input
                 id="selected-effect-intensity"
                 type="range"
-                min={0.1}
+                min={0}
                 max={1}
                 step={0.01}
                 value={selectedEffect.intensity}
@@ -617,6 +674,103 @@ export function RightEditorPanel({
                 </span>
               </p>
             </div>
+
+            {(selectedEffect.type === 'zoom-in' ||
+              selectedEffect.type === 'zoom-out') && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-2.5">
+                <div>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <label
+                      htmlFor="selected-zoom-target"
+                      className="font-medium text-cyan-200"
+                    >
+                      Target Zoom %
+                    </label>
+                    <span className="font-mono tabular-nums text-cyan-300 font-semibold">
+                      {Math.round(selectedEffect.targetZoom ?? 165)}%
+                    </span>
+                  </div>
+                  <input
+                    id="selected-zoom-target"
+                    type="range"
+                    min={110}
+                    max={300}
+                    step={1}
+                    value={selectedEffect.targetZoom ?? 165}
+                    onChange={(e) =>
+                      onUpdateEffectItem(selectedEffect.id, {
+                        targetZoom: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-cyan-400 cursor-pointer"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] mb-0.5">
+                      <label htmlFor="zoom-focus-x" className="text-zinc-300">
+                        Center X
+                      </label>
+                      <span className="font-mono tabular-nums text-zinc-400">
+                        {Math.round(selectedEffect.zoomCenterX ?? 50)}%
+                      </span>
+                    </div>
+                    <input
+                      id="zoom-focus-x"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={selectedEffect.zoomCenterX ?? 50}
+                      onChange={(e) =>
+                        onUpdateEffectItem(selectedEffect.id, {
+                          zoomCenterX: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-cyan-400 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] mb-0.5">
+                      <label htmlFor="zoom-focus-y" className="text-zinc-300">
+                        Center Y
+                      </label>
+                      <span className="font-mono tabular-nums text-zinc-400">
+                        {Math.round(selectedEffect.zoomCenterY ?? 50)}%
+                      </span>
+                    </div>
+                    <input
+                      id="zoom-focus-y"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={selectedEffect.zoomCenterY ?? 50}
+                      onChange={(e) =>
+                        onUpdateEffectItem(selectedEffect.id, {
+                          zoomCenterY: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-cyan-400 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateEffectItem(selectedEffect.id, {
+                      zoomCenterX: 50,
+                      zoomCenterY: 50,
+                    })
+                  }
+                  className="w-full py-1 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-700 text-[10px] text-zinc-300 transition-colors"
+                >
+                  Reset Focus (50%, 50%)
+                </button>
+              </div>
+            )}
 
             {/* Opacity Slider */}
             <div className="space-y-1">
@@ -727,6 +881,40 @@ export function RightEditorPanel({
                     </button>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Party & Creative VFX Suite */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Party &amp; Creative VFX
+                </h3>
+                <p className="text-[10px] text-zinc-400">
+                  One-click 4s block on Effects track with intensity control
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {EFFECT_CATALOG.filter((e) => e.category === 'party').map(
+                  (ef) => {
+                    const active = selectedEffect?.type === ef.type;
+                    return (
+                      <button
+                        key={ef.type}
+                        type="button"
+                        onClick={() => onAddTimelineEffect(ef.type)}
+                        className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors truncate ${
+                          active
+                            ? 'border-pink-400 bg-pink-500/20 text-pink-100'
+                            : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-pink-500/60 hover:bg-pink-500/10'
+                        }`}
+                      >
+                        <span aria-hidden="true">{ef.icon}</span>
+                        <span className="truncate">{ef.name}</span>
+                      </button>
+                    );
+                  }
+                )}
               </div>
             </div>
 
@@ -876,6 +1064,108 @@ export function RightEditorPanel({
               </div>
             </div>
 
+            {/* Clip Transitions between Video Segments */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Clip Transitions
+                </h3>
+                <p className="text-[10px] text-zinc-400">
+                  Smooth join between consecutive video clips
+                </p>
+              </div>
+
+              {activeTransitionClip ? (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-zinc-400 shrink-0">
+                      Incoming on:
+                    </span>
+                    {transitionableClips.length > 1 ? (
+                      <select
+                        aria-label="Target clip for incoming transition"
+                        value={activeTransitionClip.id}
+                        onChange={(e) => onSelectVideoClip(e.target.value)}
+                        className="min-w-0 flex-1 rounded border border-zinc-700 bg-[#0B0D10] px-1.5 py-0.5 text-[10px] text-zinc-100"
+                      >
+                        {transitionableClips.map((c, idx) => (
+                          <option key={c.id} value={c.id}>
+                            #{idx + 2} {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-[10px] text-zinc-200 font-medium truncate">
+                        {activeTransitionClip.name}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {TRANSITION_OPTIONS.map((tr) => {
+                      const active =
+                        activeTransitionClip.transitionIn.type === tr.id;
+                      return (
+                        <button
+                          key={tr.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateClipTransition(activeTransitionClip.id, {
+                              ...activeTransitionClip.transitionIn,
+                              type: tr.id,
+                            })
+                          }
+                          className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-colors truncate ${
+                            active
+                              ? 'border-blue-500 bg-blue-500/20 text-blue-100'
+                              : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                          }`}
+                        >
+                          {tr.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {activeTransitionClip.transitionIn.type !== 'none' && (
+                    <div>
+                      <div className="flex items-center justify-between text-[11px] mb-1">
+                        <label
+                          htmlFor="panel-transition-dur"
+                          className="text-zinc-300"
+                        >
+                          Transition Duration
+                        </label>
+                        <span className="font-mono tabular-nums text-zinc-400">
+                          {activeTransitionClip.transitionIn.duration.toFixed(
+                            1
+                          )}
+                          s
+                        </span>
+                      </div>
+                      <input
+                        id="panel-transition-dur"
+                        type="range"
+                        min={0.3}
+                        max={2.5}
+                        step={0.1}
+                        value={activeTransitionClip.transitionIn.duration}
+                        onChange={(e) =>
+                          onUpdateClipTransition(activeTransitionClip.id, {
+                            ...activeTransitionClip.transitionIn,
+                            duration: Number(e.target.value),
+                          })
+                        }
+                        className="w-full accent-blue-500 cursor-pointer"
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[10px] text-zinc-500 rounded-lg border border-dashed border-zinc-800 bg-[#0D1015] p-2">
+                  Add 2+ clips (or Split a clip) to configure transitions.
+                </p>
+              )}
+            </div>
+
             {effectItems.length > 0 && (
               <div className="pt-3 border-t border-zinc-800/80 space-y-1.5">
                 <span className="block text-[10px] font-medium text-zinc-400">
@@ -968,6 +1258,40 @@ export function RightEditorPanel({
                   </button>
                 );
               })}
+            </div>
+
+            {/* Cinema & Film VFX Suite */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Cinema &amp; Film VFX
+                </h3>
+                <p className="text-[10px] text-zinc-400">
+                  Film bars, grain, flares, light leaks &amp; AI portrait
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {EFFECT_CATALOG.filter((e) => e.category === 'cinema').map(
+                  (ef) => {
+                    const active = selectedEffect?.type === ef.type;
+                    return (
+                      <button
+                        key={ef.type}
+                        type="button"
+                        onClick={() => onAddTimelineEffect(ef.type)}
+                        className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors truncate ${
+                          active
+                            ? 'border-amber-400 bg-amber-500/20 text-amber-100'
+                            : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-amber-500/60 hover:bg-amber-500/10'
+                        }`}
+                      >
+                        <span aria-hidden="true">{ef.icon}</span>
+                        <span className="truncate">{ef.name}</span>
+                      </button>
+                    );
+                  }
+                )}
+              </div>
             </div>
 
             <div className="space-y-3 pt-2 border-t border-zinc-800/80">
@@ -1627,6 +1951,152 @@ export function RightEditorPanel({
                     ))}
                 </div>
               )}
+
+              {selectedOverlay && (
+                <div className="pt-3 border-t border-zinc-800/80 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-sky-300 truncate">
+                      Selected: {selectedOverlay.name}
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400 shrink-0">
+                      {Math.round(selectedOverlay.opacity * 100)}%
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-[10px] font-medium text-zinc-400">
+                      Entrance / Motion Animation
+                    </span>
+                    <div className="grid grid-cols-3 gap-1">
+                      {OVERLAY_ANIMATION_OPTIONS.map((anim) => {
+                        const active =
+                          (selectedOverlay.animation ?? 'none') === anim.id;
+                        return (
+                          <button
+                            key={anim.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateOverlay(selectedOverlay.id, {
+                                animation: anim.id as OverlayAnimationPreset,
+                              })
+                            }
+                            className={`py-1 px-1.5 rounded border text-[10px] font-medium transition-colors truncate ${
+                              active
+                                ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                                : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                            }`}
+                          >
+                            {anim.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-[10px] font-medium text-zinc-400">
+                      Face &amp; Frame Anchor Presets
+                    </span>
+                    <div className="grid grid-cols-2 gap-1">
+                      {FACE_ANCHOR_POSITIONS.map((pos) => {
+                        const active = selectedOverlay.anchorPreset === pos.id;
+                        return (
+                          <button
+                            key={pos.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateOverlay(selectedOverlay.id, {
+                                anchorPreset: pos.id as FaceAnchorPreset,
+                                x: pos.x,
+                                y: pos.y,
+                              })
+                            }
+                            className={`py-1 px-2 rounded border text-[10px] font-medium transition-colors truncate ${
+                              active
+                                ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100'
+                                : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                            }`}
+                          >
+                            {pos.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-zinc-400">
+                      Fine Nudge
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateOverlay(selectedOverlay.id, {
+                            x: Math.max(0.04, selectedOverlay.x - 0.02),
+                          })
+                        }
+                        aria-label="Nudge overlay left"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ←
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateOverlay(selectedOverlay.id, {
+                            y: Math.max(0.04, selectedOverlay.y - 0.02),
+                          })
+                        }
+                        aria-label="Nudge overlay up"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateOverlay(selectedOverlay.id, {
+                            y: Math.min(0.96, selectedOverlay.y + 0.02),
+                          })
+                        }
+                        aria-label="Nudge overlay down"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateOverlay(selectedOverlay.id, {
+                            x: Math.min(0.96, selectedOverlay.x + 0.02),
+                          })
+                        }
+                        aria-label="Nudge overlay right"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        →
+                      </button>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center justify-between rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-1.5 cursor-pointer">
+                    <span className="text-[11px] text-zinc-200">
+                      Motion Sway Sync
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedOverlay.followMotion)}
+                      onChange={(e) =>
+                        onUpdateOverlay(selectedOverlay.id, {
+                          followMotion: e.target.checked,
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-sky-500 cursor-pointer"
+                    />
+                  </label>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1855,7 +2325,9 @@ export function RightEditorPanel({
                       step={0.1}
                       value={Number(selectedText.startTime.toFixed(2))}
                       onChange={(e) => {
-                        const val = Math.max(0, Number(e.target.value));
+                        const raw = Number(e.target.value);
+                        if (!Number.isFinite(raw)) return;
+                        const val = Math.max(0, raw);
                         onUpdateTextOverlay(selectedText.id, {
                           startTime: Math.min(val, selectedText.endTime - 0.2),
                         });
@@ -1878,6 +2350,7 @@ export function RightEditorPanel({
                       value={Number(selectedText.endTime.toFixed(2))}
                       onChange={(e) => {
                         const val = Number(e.target.value);
+                        if (!Number.isFinite(val)) return;
                         onUpdateTextOverlay(selectedText.id, {
                           endTime: Math.max(selectedText.startTime + 0.2, val),
                         });
@@ -1885,6 +2358,142 @@ export function RightEditorPanel({
                       className="w-full rounded-lg border border-zinc-700/80 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100"
                     />
                   </div>
+                </div>
+
+                {/* Text Animation & Anchor Presets */}
+                <div className="pt-2.5 border-t border-zinc-800/80 space-y-2.5">
+                  <div className="space-y-1.5">
+                    <span className="block text-[10px] font-medium text-zinc-400">
+                      Text Animation Preset
+                    </span>
+                    <div className="grid grid-cols-3 gap-1">
+                      {OVERLAY_ANIMATION_OPTIONS.map((anim) => {
+                        const active =
+                          (selectedText.animation ?? 'none') === anim.id;
+                        return (
+                          <button
+                            key={anim.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateTextOverlay(selectedText.id, {
+                                animation: anim.id as OverlayAnimationPreset,
+                              })
+                            }
+                            className={`py-1 px-1.5 rounded border text-[10px] font-medium transition-colors truncate ${
+                              active
+                                ? 'border-blue-400 bg-blue-500/20 text-blue-100'
+                                : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                            }`}
+                          >
+                            {anim.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-[10px] font-medium text-zinc-400">
+                      Position / Face Anchor
+                    </span>
+                    <div className="grid grid-cols-2 gap-1">
+                      {FACE_ANCHOR_POSITIONS.map((pos) => {
+                        const active = selectedText.anchorPreset === pos.id;
+                        return (
+                          <button
+                            key={pos.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateTextOverlay(selectedText.id, {
+                                anchorPreset: pos.id as FaceAnchorPreset,
+                                x: pos.x,
+                                y: pos.y,
+                              })
+                            }
+                            className={`py-1 px-2 rounded border text-[10px] font-medium transition-colors truncate ${
+                              active
+                                ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100'
+                                : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                            }`}
+                          >
+                            {pos.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-zinc-400">
+                      Fine Nudge
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateTextOverlay(selectedText.id, {
+                            x: Math.max(0.04, selectedText.x - 0.02),
+                          })
+                        }
+                        aria-label="Nudge text left"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ←
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateTextOverlay(selectedText.id, {
+                            y: Math.max(0.04, selectedText.y - 0.02),
+                          })
+                        }
+                        aria-label="Nudge text up"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateTextOverlay(selectedText.id, {
+                            y: Math.min(0.96, selectedText.y + 0.02),
+                          })
+                        }
+                        aria-label="Nudge text down"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateTextOverlay(selectedText.id, {
+                            x: Math.min(0.96, selectedText.x + 0.02),
+                          })
+                        }
+                        aria-label="Nudge text right"
+                        className="px-2 py-0.5 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-600 text-[11px] text-zinc-200"
+                      >
+                        →
+                      </button>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center justify-between rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-1.5 cursor-pointer">
+                    <span className="text-[11px] text-zinc-200">
+                      Motion Sway Sync
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedText.followMotion)}
+                      onChange={(e) =>
+                        onUpdateTextOverlay(selectedText.id, {
+                          followMotion: e.target.checked,
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                    />
+                  </label>
                 </div>
               </div>
             ) : (
@@ -2091,7 +2700,7 @@ export function RightEditorPanel({
             </div>
 
             {selectedAudioClip && (
-              <div className="pt-3 border-t border-zinc-800/80 space-y-1.5">
+              <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="text-emerald-300 font-medium truncate max-w-[160px]">
                     Clip: {selectedAudioClip.name}
@@ -2114,6 +2723,57 @@ export function RightEditorPanel({
                   aria-label="Selected audio clip volume"
                   className="w-full accent-emerald-500 cursor-pointer"
                 />
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] mb-0.5">
+                      <label htmlFor="audio-fade-in" className="text-zinc-300">
+                        Fade In
+                      </label>
+                      <span className="font-mono tabular-nums text-zinc-400">
+                        {(selectedAudioClip.fadeIn ?? 0).toFixed(1)}s
+                      </span>
+                    </div>
+                    <input
+                      id="audio-fade-in"
+                      type="range"
+                      min={0}
+                      max={5}
+                      step={0.1}
+                      value={selectedAudioClip.fadeIn ?? 0}
+                      onChange={(e) =>
+                        onUpdateAudioClip(selectedAudioClip.id, {
+                          fadeIn: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-emerald-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] mb-0.5">
+                      <label htmlFor="audio-fade-out" className="text-zinc-300">
+                        Fade Out
+                      </label>
+                      <span className="font-mono tabular-nums text-zinc-400">
+                        {(selectedAudioClip.fadeOut ?? 0).toFixed(1)}s
+                      </span>
+                    </div>
+                    <input
+                      id="audio-fade-out"
+                      type="range"
+                      min={0}
+                      max={5}
+                      step={0.1}
+                      value={selectedAudioClip.fadeOut ?? 0}
+                      onChange={(e) =>
+                        onUpdateAudioClip(selectedAudioClip.id, {
+                          fadeOut: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-emerald-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
@@ -2179,11 +2839,11 @@ export function RightEditorPanel({
               </div>
             </div>
 
-            {/* Audio Echo & Reverb Effects */}
+            {/* Pro Studio Audio Effects (Web Audio API) */}
             <div className="pt-3 border-t border-zinc-800/80 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold text-zinc-100">
-                  Audio Echo &amp; Reverb
+                  Studio Audio FX
                 </h3>
                 <select
                   aria-label="Audio effects target"
@@ -2201,6 +2861,194 @@ export function RightEditorPanel({
                 </select>
               </div>
 
+              {/* Voice Changer & Pitch Shift */}
+              <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
+                <span className="block text-[11px] font-medium text-zinc-200">
+                  Voice Changer &amp; Pitch
+                </span>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      {id: 'normal', label: 'Normal'},
+                      {id: 'deep', label: 'Deep / Bass'},
+                      {id: 'chipmunk', label: 'Chipmunk'},
+                      {id: 'robot', label: 'Robot'},
+                      {id: 'radio', label: 'Radio'},
+                    ] as Array<{id: VoiceChangerPreset; label: string}>
+                  ).map((preset) => {
+                    const active = audioSettings.effects.voicePreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          const defaultPitch =
+                            preset.id === 'deep'
+                              ? -5
+                              : preset.id === 'chipmunk'
+                                ? 7
+                                : preset.id === 'normal'
+                                  ? 0
+                                  : audioSettings.effects.pitchSemitones;
+                          updateAudioEffects({
+                            voicePreset: preset.id,
+                            pitchSemitones: defaultPitch,
+                          });
+                        }}
+                        className={`py-1 px-1.5 rounded border text-[10px] font-medium transition-colors truncate ${
+                          active
+                            ? 'border-blue-500 bg-blue-500/20 text-blue-100'
+                            : 'border-zinc-800 bg-[#0B0D10] text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-[10px] mb-0.5">
+                    <label htmlFor="audio-pitch-slider" className="text-zinc-300">
+                      Pitch Shift (Semitones)
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono tabular-nums text-blue-300">
+                        {audioSettings.effects.pitchSemitones > 0
+                          ? `+${audioSettings.effects.pitchSemitones}`
+                          : audioSettings.effects.pitchSemitones}{' '}
+                        st
+                      </span>
+                      {audioSettings.effects.pitchSemitones !== 0 && (
+                        <button
+                          type="button"
+                          onClick={() => updateAudioEffects({pitchSemitones: 0})}
+                          className="text-[9px] text-zinc-400 hover:text-zinc-100 underline"
+                        >
+                          0
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <input
+                    id="audio-pitch-slider"
+                    type="range"
+                    min={-12}
+                    max={12}
+                    step={1}
+                    value={audioSettings.effects.pitchSemitones}
+                    onChange={(e) =>
+                      updateAudioEffects({
+                        pitchSemitones: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {/* Noise Reduction */}
+              <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="toggle-noise-reduction"
+                    className="text-[11px] font-medium text-zinc-200 cursor-pointer"
+                  >
+                    Noise Reduction
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                      {audioSettings.effects.noiseReductionAmount}%
+                    </span>
+                    <input
+                      id="toggle-noise-reduction"
+                      type="checkbox"
+                      checked={audioSettings.effects.noiseReductionEnabled}
+                      onChange={(e) =>
+                        updateAudioEffects({
+                          noiseReductionEnabled: e.target.checked,
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-emerald-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!audioSettings.effects.noiseReductionEnabled}
+                  value={audioSettings.effects.noiseReductionAmount}
+                  onChange={(e) =>
+                    updateAudioEffects({
+                      noiseReductionAmount: Number(e.target.value),
+                    })
+                  }
+                  aria-label="Noise reduction intensity"
+                  className="w-full accent-emerald-500 cursor-pointer disabled:opacity-40"
+                />
+              </div>
+
+              {/* Voice Enhancement */}
+              <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="toggle-voice-enhance"
+                    className="text-[11px] font-medium text-zinc-200 cursor-pointer"
+                  >
+                    Voice Enhancement
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                      {audioSettings.effects.voiceEnhanceAmount}%
+                    </span>
+                    <input
+                      id="toggle-voice-enhance"
+                      type="checkbox"
+                      checked={audioSettings.effects.voiceEnhanceEnabled}
+                      onChange={(e) =>
+                        updateAudioEffects({
+                          voiceEnhanceEnabled: e.target.checked,
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-sky-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!audioSettings.effects.voiceEnhanceEnabled}
+                  value={audioSettings.effects.voiceEnhanceAmount}
+                  onChange={(e) =>
+                    updateAudioEffects({
+                      voiceEnhanceAmount: Number(e.target.value),
+                    })
+                  }
+                  aria-label="Voice enhancement intensity"
+                  className="w-full accent-sky-500 cursor-pointer disabled:opacity-40"
+                />
+              </div>
+
+              {/* Auto Volume Control */}
+              <label className="flex items-center justify-between rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-2 cursor-pointer">
+                <span className="text-[11px] font-medium text-zinc-200">
+                  Auto Volume Control (Normalizer)
+                </span>
+                <input
+                  type="checkbox"
+                  checked={audioSettings.effects.autoVolumeEnabled}
+                  onChange={(e) =>
+                    updateAudioEffects({autoVolumeEnabled: e.target.checked})
+                  }
+                  className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                />
+              </label>
+
+              {/* Echo (Delay) */}
               <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <label
@@ -2239,6 +3087,7 @@ export function RightEditorPanel({
                 />
               </div>
 
+              {/* Reverb (Room) */}
               <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <label
@@ -2276,6 +3125,85 @@ export function RightEditorPanel({
                   className="w-full accent-blue-500 cursor-pointer disabled:opacity-40"
                 />
               </div>
+            </div>
+
+            {/* Audio Beat Sync */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-semibold text-zinc-100">
+                    Audio Beat Sync
+                  </h3>
+                  <p className="text-[10px] text-zinc-400">
+                    Detect beat markers &amp; sync Disco strobe lights
+                  </p>
+                </div>
+                {beatSync && (
+                  <button
+                    type="button"
+                    onClick={onClearBeats}
+                    className="text-[10px] text-zinc-400 hover:text-zinc-100"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {audioClips.length > 0 ? (
+                (() => {
+                  const beatClip = selectedAudioClip ?? audioClips[0];
+                  return (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        disabled={beatAnalyzing}
+                        onClick={() => onAnalyzeBeats(beatClip.id)}
+                        className="w-full py-1.5 px-3 rounded-lg bg-amber-500/90 hover:bg-amber-400 disabled:opacity-50 text-[11px] font-semibold text-zinc-950 transition-colors"
+                      >
+                        {beatAnalyzing
+                          ? 'Analyzing Beats...'
+                          : `Analyze Beats (${beatClip.name})`}
+                      </button>
+
+                      {beatError && (
+                        <p className="text-[10px] text-red-400">{beatError}</p>
+                      )}
+
+                      {beatSync && (
+                        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 space-y-2">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-mono font-semibold text-amber-200">
+                              {beatSync.bpm} BPM
+                            </span>
+                            <span className="font-mono text-zinc-300">
+                              {beatSync.beatTimes.length} beats detected
+                            </span>
+                          </div>
+                          {beatSync.beatTimes.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextBeat =
+                                  beatSync.beatTimes.find(
+                                    (t) => t > currentTime + 0.05
+                                  ) ?? beatSync.beatTimes[0];
+                                onSeek(nextBeat);
+                              }}
+                              className="w-full py-1 rounded border border-amber-500/40 bg-[#0D1015] hover:bg-amber-500/15 text-[10px] font-medium text-amber-200 transition-colors"
+                            >
+                              Jump to Next Beat
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                <p className="text-[10px] text-zinc-500 rounded-lg border border-dashed border-zinc-800 bg-[#0D1015] p-2">
+                  Upload or add an audio track above to detect beat markers.
+                </p>
+              )}
             </div>
           </div>
         )}
