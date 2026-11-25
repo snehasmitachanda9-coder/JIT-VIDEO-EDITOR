@@ -58,6 +58,7 @@ import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
   extractAudioDuration,
+  resolveSegmentSourceTime,
   resolveVideoStateAtTime,
 } from './utils/timelineMath';
 import {
@@ -130,6 +131,76 @@ const DEFAULT_TRANSITION: ClipTransition = {
   duration: 0.8,
 };
 
+const MAX_HISTORY_STATES = 30;
+
+interface EditorHistorySnapshot {
+  videoClips: TimelineVideoClip[];
+  effectItems: TimelineEffectItem[];
+  overlayLayers: OverlayLayerItem[];
+  audioClips: TimelineAudioClip[];
+  textOverlays: TextOverlayItem[];
+  filters: VideoFilters;
+  motionTransform: MotionTransform;
+  mainBgRemoval: BackgroundRemovalConfig;
+  audioSettings: AudioSettings;
+}
+
+function areSnapshotsEqual(
+  a: EditorHistorySnapshot,
+  b: EditorHistorySnapshot
+): boolean {
+  return (
+    a.videoClips === b.videoClips &&
+    a.effectItems === b.effectItems &&
+    a.overlayLayers === b.overlayLayers &&
+    a.audioClips === b.audioClips &&
+    a.textOverlays === b.textOverlays &&
+    a.filters === b.filters &&
+    a.motionTransform === b.motionTransform &&
+    a.mainBgRemoval === b.mainBgRemoval &&
+    a.audioSettings === b.audioSettings
+  );
+}
+
+function haveSameItemIds(
+  a: ReadonlyArray<{id: string}>,
+  b: ReadonlyArray<{id: string}>
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id) return false;
+  }
+  return true;
+}
+
+function isStructuralHistoryChange(
+  a: EditorHistorySnapshot,
+  b: EditorHistorySnapshot
+): boolean {
+  if (!haveSameItemIds(a.videoClips, b.videoClips)) return true;
+  if (!haveSameItemIds(a.effectItems, b.effectItems)) return true;
+  if (!haveSameItemIds(a.overlayLayers, b.overlayLayers)) return true;
+  if (!haveSameItemIds(a.audioClips, b.audioClips)) return true;
+  if (!haveSameItemIds(a.textOverlays, b.textOverlays)) return true;
+  if (a.filters.preset !== b.filters.preset) return true;
+  if (
+    a.motionTransform.flipH !== b.motionTransform.flipH ||
+    a.motionTransform.flipV !== b.motionTransform.flipV
+  ) {
+    return true;
+  }
+  if (a.mainBgRemoval.mode !== b.mainBgRemoval.mode) return true;
+  if (
+    a.audioSettings.videoMuted !== b.audioSettings.videoMuted ||
+    a.audioSettings.musicMuted !== b.audioSettings.musicMuted ||
+    a.audioSettings.playbackSpeed !== b.audioSettings.playbackSpeed
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export default function App() {
   // Responsive Layout & Collapse State
   const [leftCollapsed, setLeftCollapsed] = useState(false);
@@ -191,6 +262,219 @@ export default function App() {
   const urlsRef = useRef<Set<string>>(new Set());
   const exportAbortRef = useRef<AbortController | null>(null);
 
+  // 30-State Undo / Redo History Engine
+  const initialSnapshotRef = useRef<EditorHistorySnapshot | null>(null);
+  if (!initialSnapshotRef.current) {
+    initialSnapshotRef.current = {
+      videoClips,
+      effectItems,
+      overlayLayers,
+      audioClips,
+      textOverlays,
+      filters,
+      motionTransform,
+      mainBgRemoval,
+      audioSettings,
+    };
+  }
+  const historyRef = useRef<{
+    past: EditorHistorySnapshot[];
+    future: EditorHistorySnapshot[];
+  }>({past: [], future: []});
+  const [historyCounts, setHistoryCounts] = useState({
+    canUndo: false,
+    canRedo: false,
+  });
+  const prevCommittedRef = useRef<EditorHistorySnapshot>(
+    initialSnapshotRef.current
+  );
+  const pendingBaseRef = useRef<EditorHistorySnapshot | null>(null);
+  const pendingLatestRef = useRef<EditorHistorySnapshot | null>(null);
+  const historyDebounceRef = useRef<number | null>(null);
+  const isRestoringHistoryRef = useRef(false);
+
+  const currentSnapshot = useMemo<EditorHistorySnapshot>(
+    () => ({
+      videoClips,
+      effectItems,
+      overlayLayers,
+      audioClips,
+      textOverlays,
+      filters,
+      motionTransform,
+      mainBgRemoval,
+      audioSettings,
+    }),
+    [
+      videoClips,
+      effectItems,
+      overlayLayers,
+      audioClips,
+      textOverlays,
+      filters,
+      motionTransform,
+      mainBgRemoval,
+      audioSettings,
+    ]
+  );
+
+  const syncHistoryFlags = useCallback(() => {
+    const canUndo =
+      historyRef.current.past.length > 0 || pendingBaseRef.current !== null;
+    const canRedo = historyRef.current.future.length > 0;
+    setHistoryCounts((prev) =>
+      prev.canUndo === canUndo && prev.canRedo === canRedo
+        ? prev
+        : {canUndo, canRedo}
+    );
+  }, []);
+
+  const flushPendingHistory = useCallback(() => {
+    if (historyDebounceRef.current !== null) {
+      window.clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+    }
+    if (pendingBaseRef.current && pendingLatestRef.current) {
+      historyRef.current.past = [
+        ...historyRef.current.past,
+        pendingBaseRef.current,
+      ].slice(-MAX_HISTORY_STATES);
+      historyRef.current.future = [];
+      prevCommittedRef.current = pendingLatestRef.current;
+      pendingBaseRef.current = null;
+      pendingLatestRef.current = null;
+      syncHistoryFlags();
+    }
+  }, [syncHistoryFlags]);
+
+  useEffect(() => {
+    if (isRestoringHistoryRef.current) {
+      isRestoringHistoryRef.current = false;
+      prevCommittedRef.current = currentSnapshot;
+      return;
+    }
+
+    if (areSnapshotsEqual(prevCommittedRef.current, currentSnapshot)) {
+      return;
+    }
+
+    const baseForComparison =
+      pendingLatestRef.current ?? prevCommittedRef.current;
+
+    if (isStructuralHistoryChange(baseForComparison, currentSnapshot)) {
+      flushPendingHistory();
+      historyRef.current.past = [
+        ...historyRef.current.past,
+        prevCommittedRef.current,
+      ].slice(-MAX_HISTORY_STATES);
+      historyRef.current.future = [];
+      prevCommittedRef.current = currentSnapshot;
+      syncHistoryFlags();
+    } else {
+      if (!pendingBaseRef.current) {
+        pendingBaseRef.current = prevCommittedRef.current;
+      }
+      pendingLatestRef.current = currentSnapshot;
+      historyRef.current.future = [];
+      syncHistoryFlags();
+
+      if (historyDebounceRef.current !== null) {
+        window.clearTimeout(historyDebounceRef.current);
+      }
+      historyDebounceRef.current = window.setTimeout(() => {
+        flushPendingHistory();
+      }, 300);
+    }
+  }, [currentSnapshot, flushPendingHistory, syncHistoryFlags]);
+
+  useEffect(() => {
+    return () => {
+      if (historyDebounceRef.current !== null) {
+        window.clearTimeout(historyDebounceRef.current);
+      }
+    };
+  }, []);
+
+  const applyHistorySnapshot = useCallback((snap: EditorHistorySnapshot) => {
+    isRestoringHistoryRef.current = true;
+    prevCommittedRef.current = snap;
+    setIsPlaying(false);
+    setVideoClips(snap.videoClips);
+    setEffectItems(snap.effectItems);
+    setOverlayLayers(snap.overlayLayers);
+    setAudioClips(snap.audioClips);
+    setTextOverlays(snap.textOverlays);
+    setFilters(snap.filters);
+    setMotionTransform(snap.motionTransform);
+    setMainBgRemoval(snap.mainBgRemoval);
+    setAudioSettings(snap.audioSettings);
+
+    setSelectedItem((prev) => {
+      if (!prev) return null;
+      if (prev.track === 'video') {
+        return snap.videoClips.some((c) => c.id === prev.id) ? prev : null;
+      }
+      if (prev.track === 'effect') {
+        return snap.effectItems.some((e) => e.id === prev.id) ? prev : null;
+      }
+      if (prev.track === 'overlay') {
+        return snap.overlayLayers.some((o) => o.id === prev.id) ? prev : null;
+      }
+      if (prev.track === 'audio') {
+        return snap.audioClips.some((a) => a.id === prev.id) ? prev : null;
+      }
+      if (prev.track === 'text') {
+        return snap.textOverlays.some((t) => t.id === prev.id) ? prev : null;
+      }
+      return null;
+    });
+
+    setBgTargetKey((prevKey) =>
+      prevKey !== 'main' &&
+      !snap.overlayLayers.some((o) => o.id === prevKey)
+        ? 'main'
+        : prevKey
+    );
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    flushPendingHistory();
+    const past = historyRef.current.past;
+    if (past.length === 0) return;
+    const previous = past[past.length - 1];
+    historyRef.current.past = past.slice(0, -1);
+    historyRef.current.future = [
+      currentSnapshot,
+      ...historyRef.current.future,
+    ].slice(0, MAX_HISTORY_STATES);
+    applyHistorySnapshot(previous);
+    syncHistoryFlags();
+  }, [
+    currentSnapshot,
+    flushPendingHistory,
+    applyHistorySnapshot,
+    syncHistoryFlags,
+  ]);
+
+  const handleRedo = useCallback(() => {
+    flushPendingHistory();
+    const future = historyRef.current.future;
+    if (future.length === 0) return;
+    const next = future[0];
+    historyRef.current.future = future.slice(1);
+    historyRef.current.past = [
+      ...historyRef.current.past,
+      currentSnapshot,
+    ].slice(-MAX_HISTORY_STATES);
+    applyHistorySnapshot(next);
+    syncHistoryFlags();
+  }, [
+    currentSnapshot,
+    flushPendingHistory,
+    applyHistorySnapshot,
+    syncHistoryFlags,
+  ]);
+
   useEffect(() => {
     const activeUrls = urlsRef.current;
     return () => {
@@ -200,15 +484,53 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isFullPreview) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && isFullPreview) {
         setIsFullPreview(false);
+        return;
+      }
+
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl) {
+        const tag = targetEl.tagName;
+        if (
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          targetEl.isContentEditable
+        ) {
+          return;
+        }
+        if (tag === 'INPUT') {
+          const inputType = (targetEl as HTMLInputElement).type;
+          if (
+            inputType !== 'range' &&
+            inputType !== 'checkbox' &&
+            inputType !== 'button' &&
+            inputType !== 'radio'
+          ) {
+            return;
+          }
+        }
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if (key === 'y' && !e.shiftKey) {
+        e.preventDefault();
+        handleRedo();
       }
     };
+
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isFullPreview]);
+  }, [isFullPreview, handleUndo, handleRedo]);
 
   const totalDuration = useMemo(
     () =>
@@ -465,6 +787,15 @@ export default function App() {
 
   const handleRemoveAsset = useCallback(
     (assetId: string) => {
+      if (historyDebounceRef.current !== null) {
+        window.clearTimeout(historyDebounceRef.current);
+        historyDebounceRef.current = null;
+      }
+      pendingBaseRef.current = null;
+      pendingLatestRef.current = null;
+      historyRef.current = {past: [], future: []};
+      syncHistoryFlags();
+
       setMediaAssets((prev) => {
         const target = prev.find((a) => a.id === assetId);
         if (target) {
@@ -486,7 +817,7 @@ export default function App() {
         }));
       }
     },
-    [mainBgRemoval.replacementAssetId]
+    [mainBgRemoval.replacementAssetId, syncHistoryFlags]
   );
 
   // Freeze Frame Insertion (3-second still image segment at playhead)
@@ -498,7 +829,8 @@ export default function App() {
 
     const segments = computeVideoTimelineSegments(
       videoClips,
-      audioSettings.playbackSpeed
+      audioSettings.playbackSpeed,
+      effectItems
     );
     const activeState = resolveVideoStateAtTime(segments, currentTime);
     const seg = activeState.primary;
@@ -531,8 +863,12 @@ export default function App() {
       } else if (isNearEnd) {
         copy.splice(idx + 1, 0, freezeClip);
       } else {
-        const mult = seg.clip.kind === 'freeze' ? 1 : audioSettings.playbackSpeed;
-        const splitSource = seg.clip.trimStart + elapsedInSeg * mult;
+        const splitSource = resolveSegmentSourceTime(
+          seg,
+          currentTime,
+          audioSettings.playbackSpeed,
+          effectItems
+        );
         const firstHalf: TimelineVideoClip = {
           ...seg.clip,
           trimEnd: splitSource,
@@ -550,7 +886,7 @@ export default function App() {
 
     setIsPlaying(false);
     setSelectedItem({track: 'video', id: freezeClip.id});
-  }, [videoClips, audioSettings.playbackSpeed, currentTime]);
+  }, [videoClips, effectItems, audioSettings.playbackSpeed, currentTime]);
 
   const handleUpdateClipTransition = useCallback(
     (clipId: string, transition: ClipTransition) => {
@@ -732,7 +1068,7 @@ export default function App() {
     setBeatError(null);
   }, []);
 
-  // Effects Track (Weather, Animated Motion, Party/Cinema VFX, Color Filters)
+  // Effects Track (Weather, Animated Motion, Studio/Cinema VFX, Color Filters)
   const handleAddTimelineEffect = useCallback(
     (type: TimelineEffectType) => {
       const entry = getEffectCatalogEntry(type);
@@ -756,6 +1092,7 @@ export default function App() {
               zoomCenterY: 50,
             }
           : {}),
+        ...(type === 'speed-ramp' ? {speedRampMode: 'slow-mo' as const} : {}),
       };
       setEffectItems((prev) => [...prev, item]);
       setSelectedItem({track: 'effect', id: item.id});
@@ -993,7 +1330,8 @@ export default function App() {
     if (selectedItem.track === 'video') {
       const segments = computeVideoTimelineSegments(
         videoClips,
-        audioSettings.playbackSpeed
+        audioSettings.playbackSpeed,
+        effectItems
       );
       const seg = segments.find((s) => s.clip.id === selectedItem.id);
       if (!seg) return;
@@ -1004,9 +1342,15 @@ export default function App() {
         return;
       }
 
-      const mult = seg.clip.kind === 'freeze' ? 1 : audioSettings.playbackSpeed;
       const splitSourceTime =
-        seg.clip.trimStart + (currentTime - seg.timelineStart) * mult;
+        seg.clip.kind === 'freeze'
+          ? seg.clip.trimStart + (currentTime - seg.timelineStart)
+          : resolveSegmentSourceTime(
+              seg,
+              currentTime,
+              audioSettings.playbackSpeed,
+              effectItems
+            );
 
       const firstHalf: TimelineVideoClip = {
         ...seg.clip,
@@ -1502,6 +1846,10 @@ export default function App() {
           totalDuration={totalDuration}
           playbackSpeed={audioSettings.playbackSpeed}
           beatTimes={beatTimes}
+          canUndo={historyCounts.canUndo}
+          canRedo={historyCounts.canRedo}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
           onSelectItem={(item) => {
             setSelectedItem(item);
             if (item?.track === 'overlay') {

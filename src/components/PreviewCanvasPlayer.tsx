@@ -47,6 +47,8 @@ import {preloadStickerImage} from '../utils/stickerRenderer';
 import {
   computeVideoTimelineSegments,
   getAudioClipDuration,
+  getSpeedRampMultiplierAtTime,
+  resolveSegmentSourceTime,
   resolveVideoStateAtTime,
   type ComputedVideoSegment,
 } from '../utils/timelineMath';
@@ -186,8 +188,18 @@ export function PreviewCanvasPlayer({
   const targetDims = ASPECT_RATIO_DIMENSIONS[aspectRatio];
 
   const videoSegments = useMemo(
-    () => computeVideoTimelineSegments(videoClips, audioSettings.playbackSpeed),
-    [videoClips, audioSettings.playbackSpeed]
+    () =>
+      computeVideoTimelineSegments(
+        videoClips,
+        audioSettings.playbackSpeed,
+        effectItems
+      ),
+    [videoClips, audioSettings.playbackSpeed, effectItems]
+  );
+
+  const hasSpeedRamps = useMemo(
+    () => effectItems.some((e) => e.type === 'speed-ramp'),
+    [effectItems]
   );
 
   const activeState = useMemo(
@@ -482,8 +494,15 @@ export function PreviewCanvasPlayer({
   useEffect(() => {
     const videoA = videoRefA.current;
     const videoB = videoRefB.current;
+    const rampMult = getSpeedRampMultiplierAtTime(effectItems, playTimeRef.current);
+    const effectiveRate = Math.max(
+      0.25,
+      Math.min(3, audioSettings.playbackSpeed * rampMult)
+    );
     if (videoA) {
-      videoA.playbackRate = audioSettings.playbackSpeed;
+      if (Math.abs(videoA.playbackRate - effectiveRate) > 0.02) {
+        videoA.playbackRate = effectiveRate;
+      }
       if (!videoAudioConnectedRef.current) {
         videoA.muted = audioSettings.videoMuted;
         videoA.volume = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
@@ -491,7 +510,9 @@ export function PreviewCanvasPlayer({
     }
     if (videoB) {
       videoB.muted = true;
-      videoB.playbackRate = audioSettings.playbackSpeed;
+      if (Math.abs(videoB.playbackRate - effectiveRate) > 0.02) {
+        videoB.playbackRate = effectiveRate;
+      }
     }
     if (audioGraphRef.current) {
       audioGraphRef.current.updateVolumes({
@@ -509,6 +530,7 @@ export function PreviewCanvasPlayer({
     audioSettings.musicVolume,
     audioSettings.playbackSpeed,
     audioSettings.effects,
+    effectItems,
   ]);
 
   // Expose raw active video/freeze frame capture for Freeze Frame button
@@ -706,16 +728,26 @@ export function PreviewCanvasPlayer({
         return;
       }
 
-      const expectedSourceTime =
-        seg.clip.trimStart +
-        Math.max(0, timelineTime - seg.timelineStart) *
-          audioSettings.playbackSpeed;
+      const expectedSourceTime = resolveSegmentSourceTime(
+        seg,
+        timelineTime,
+        audioSettings.playbackSpeed,
+        effectItems
+      );
+      const effectiveRate = Math.max(
+        0.25,
+        Math.min(
+          3,
+          audioSettings.playbackSpeed *
+            getSpeedRampMultiplierAtTime(effectItems, timelineTime)
+        )
+      );
       const currentSrcAttr = videoEl.getAttribute('data-clip-url');
 
       if (currentSrcAttr !== seg.clip.url) {
         videoEl.setAttribute('data-clip-url', seg.clip.url);
         videoEl.src = seg.clip.url;
-        videoEl.playbackRate = audioSettings.playbackSpeed;
+        videoEl.playbackRate = effectiveRate;
         const onReady = () => {
           try {
             videoEl.currentTime = Math.min(
@@ -730,19 +762,22 @@ export function PreviewCanvasPlayer({
           }
         };
         videoEl.addEventListener('loadedmetadata', onReady, {once: true});
-      } else if (!playing) {
-        if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.05) {
-          try {
-            videoEl.currentTime = Math.min(
-              seg.clip.trimEnd,
-              Math.max(seg.clip.trimStart, expectedSourceTime)
-            );
-          } catch {
-            // ignore
-          }
-        }
       } else {
-        if (videoEl.paused) {
+        if (Math.abs(videoEl.playbackRate - effectiveRate) > 0.02) {
+          videoEl.playbackRate = effectiveRate;
+        }
+        if (!playing) {
+          if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.05) {
+            try {
+              videoEl.currentTime = Math.min(
+                seg.clip.trimEnd,
+                Math.max(seg.clip.trimStart, expectedSourceTime)
+              );
+            } catch {
+              // ignore
+            }
+          }
+        } else if (videoEl.paused) {
           if (Math.abs(videoEl.currentTime - expectedSourceTime) > 0.15) {
             try {
               videoEl.currentTime = Math.min(
@@ -759,7 +794,7 @@ export function PreviewCanvasPlayer({
         }
       }
     },
-    [audioSettings.playbackSpeed]
+    [audioSettings.playbackSpeed, effectItems]
   );
 
   // Sync primary and outgoing video elements when paused or seeking
@@ -915,11 +950,26 @@ export function PreviewCanvasPlayer({
         videoA.getAttribute('data-clip-url') === currentSeg.clip.url &&
         videoA.readyState >= 2
       ) {
+        const effectiveRate = Math.max(
+          0.25,
+          Math.min(
+            3,
+            audioSettings.playbackSpeed *
+              getSpeedRampMultiplierAtTime(effectItems, playTimeRef.current)
+          )
+        );
+        if (Math.abs(videoA.playbackRate - effectiveRate) > 0.02) {
+          videoA.playbackRate = effectiveRate;
+        }
+
+        const expectedSource = resolveSegmentSourceTime(
+          currentSeg,
+          playTimeRef.current,
+          audioSettings.playbackSpeed,
+          effectItems
+        );
+
         if (videoA.paused) {
-          const expectedSource =
-            currentSeg.clip.trimStart +
-            Math.max(0, playTimeRef.current - currentSeg.timelineStart) *
-              audioSettings.playbackSpeed;
           if (Math.abs(videoA.currentTime - expectedSource) > 0.12) {
             try {
               videoA.currentTime = Math.min(
@@ -935,18 +985,47 @@ export function PreviewCanvasPlayer({
           }
         }
 
-        const elapsedInClip =
-          Math.max(0, videoA.currentTime - currentSeg.clip.trimStart) /
-          audioSettings.playbackSpeed;
-        const videoDerivedTime = currentSeg.timelineStart + elapsedInClip;
-
-        if (
-          videoA.currentTime >= currentSeg.clip.trimEnd - 0.03 ||
-          videoA.ended
-        ) {
-          nextTime = currentSeg.timelineEnd + 0.005;
+        if (hasSpeedRamps) {
+          const candidateTime = playTimeRef.current + dt;
+          const expectedNextSource = resolveSegmentSourceTime(
+            currentSeg,
+            candidateTime,
+            audioSettings.playbackSpeed,
+            effectItems
+          );
+          if (
+            candidateTime >= currentSeg.timelineEnd - 0.02 ||
+            expectedNextSource >= currentSeg.clip.trimEnd - 0.02 ||
+            videoA.ended
+          ) {
+            nextTime = currentSeg.timelineEnd + 0.005;
+          } else {
+            nextTime = candidateTime;
+            if (Math.abs(videoA.currentTime - expectedNextSource) > 0.18) {
+              try {
+                videoA.currentTime = Math.min(
+                  currentSeg.clip.trimEnd,
+                  Math.max(currentSeg.clip.trimStart, expectedNextSource)
+                );
+              } catch {
+                // ignore
+              }
+            }
+          }
         } else {
-          nextTime = Math.max(playTimeRef.current, videoDerivedTime);
+          const elapsedInClip =
+            Math.max(0, videoA.currentTime - currentSeg.clip.trimStart) /
+            audioSettings.playbackSpeed;
+          const videoDerivedTime = currentSeg.timelineStart + elapsedInClip;
+
+          if (
+            videoA.currentTime >= currentSeg.clip.trimEnd - 0.03 ||
+            videoA.ended
+          ) {
+            nextTime = currentSeg.timelineEnd + 0.005;
+          } else {
+            nextTime = Math.max(playTimeRef.current, videoDerivedTime);
+          }
         }
       } else if (videoA && !videoA.paused) {
         videoA.pause();
@@ -981,6 +1060,8 @@ export function PreviewCanvasPlayer({
     isPlaying,
     totalDuration,
     videoSegments,
+    effectItems,
+    hasSpeedRamps,
     audioSettings.playbackSpeed,
     drawCurrentFrame,
     onTimeChange,

@@ -415,7 +415,8 @@ function computeTimedMotionDelta(
   effectItems: TimelineEffectItem[],
   currentTime: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  beatTimes: number[] = []
 ): TimedMotionDelta {
   let zoomMultiplier = 1;
   let offsetX = 0;
@@ -436,7 +437,8 @@ function computeTimedMotionDelta(
     const progress = easeInOutQuad(rawProgress);
     const strength =
       Math.max(0, Math.min(1, ef.intensity)) *
-      Math.max(0.05, Math.min(1, ef.opacity));
+      Math.max(0, Math.min(1, ef.opacity));
+    if (strength <= 0.005) continue;
 
     if (ef.type === 'zoom-in' || ef.type === 'zoom-out') {
       const targetScale =
@@ -451,24 +453,46 @@ function computeTimedMotionDelta(
       const fx = Math.max(0, Math.min(100, ef.zoomCenterX ?? 50)) / 100;
       const fy = Math.max(0, Math.min(100, ef.zoomCenterY ?? 50)) / 100;
 
-      // Shift frame smoothly toward the user's focal X/Y point as zoom deepens
       offsetX += (0.5 - fx) * canvasWidth * (effScale - 1);
       offsetY += (0.5 - fy) * canvasHeight * (effScale - 1);
       zoomMultiplier *= effScale;
     } else if (ef.type === 'camera-shake') {
       const t = currentTime;
       const sx =
-        (Math.sin(t * 19.3) * 0.6 + Math.cos(t * 31.7) * 0.4) *
-        (canvasWidth * 0.028 * strength);
+        (Math.sin(t * 15.2) * 0.62 + Math.cos(t * 25.4) * 0.38) *
+        (canvasWidth * 0.018 * strength);
       const sy =
-        (Math.cos(t * 21.1) * 0.6 + Math.sin(t * 33.9) * 0.4) *
-        (canvasHeight * 0.028 * strength);
+        (Math.cos(t * 17.6) * 0.62 + Math.sin(t * 27.8) * 0.38) *
+        (canvasHeight * 0.018 * strength);
       offsetX += sx;
       offsetY += sy;
       shakeOffsetX += sx;
       shakeOffsetY += sy;
-      angleDeg += Math.sin(t * 14.5) * 3.0 * strength;
-      zoomMultiplier *= 1 + 0.14 * strength;
+      angleDeg += Math.sin(t * 11.5) * 1.9 * strength;
+      zoomMultiplier *= 1 + 0.095 * strength;
+    } else if (ef.type === 'heartbeat-zoom') {
+      let pulse = 0;
+      if (beatTimes.length > 0) {
+        let minDist = 999;
+        for (let b = 0; b < beatTimes.length; b++) {
+          const dt = currentTime - beatTimes[b];
+          if (dt >= 0 && dt < minDist) {
+            minDist = dt;
+          }
+        }
+        if (minDist < 0.4) {
+          pulse = Math.exp(-minDist * 14);
+        }
+      } else {
+        // Organic 78 BPM lub-dub double pulse
+        const period = 60 / 78;
+        const phase = (Math.max(0, currentTime - ef.startTime) % period);
+        const lub = Math.exp(-phase * 16);
+        const dub =
+          phase >= 0.16 ? 0.58 * Math.exp(-(phase - 0.16) * 19) : 0;
+        pulse = Math.min(1, lub + dub);
+      }
+      zoomMultiplier *= 1 + pulse * 0.16 * strength;
     }
   }
 
@@ -785,28 +809,30 @@ function drawGlitchOverlayPass(
   intensity: number,
   opacity: number
 ) {
-  const pulse = 0.35 + 0.65 * Math.abs(Math.sin(currentTime * 15.7 + 0.6));
-  const shift = (8 + pulse * 28 * intensity) * (canvasWidth / 1280);
+  const pulse = 0.25 + 0.75 * Math.abs(Math.sin(currentTime * 14.3 + 0.4));
+  const shift = (4 + pulse * 18 * intensity) * (canvasWidth / 1280);
 
   ctx.save();
-  ctx.globalAlpha = Math.min(0.95, 0.42 + intensity * 0.48) * opacity;
+  // Crisp cyan/magenta micro-aberration shift that preserves center clarity
+  ctx.globalAlpha = Math.min(0.62, 0.22 + intensity * 0.36) * opacity;
   ctx.globalCompositeOperation = 'screen';
   ctx.drawImage(snapshot, shift, 0, canvasWidth, canvasHeight);
   ctx.drawImage(snapshot, -shift, 0, canvasWidth, canvasHeight);
 
-  const sliceCount = Math.max(3, Math.round(3 + intensity * 6));
+  // Clean horizontal glitch displacement bands
+  const sliceCount = Math.max(2, Math.round(2 + intensity * 4));
   ctx.globalCompositeOperation = 'source-over';
   for (let i = 0; i < sliceCount; i++) {
-    const seed = Math.sin((currentTime + 0.37) * (19.3 + i * 7.1) + i * 2.4);
-    if (seed > -0.35) {
+    const seed = Math.sin((currentTime + 0.31) * (17.1 + i * 6.3) + i * 2.1);
+    if (seed > 0.15) {
       const yNorm = Math.abs(
-        Math.sin(i * 4.7 + Math.floor(currentTime * 12) + 0.5)
+        Math.sin(i * 4.9 + Math.floor(currentTime * 10) + 0.5)
       );
       const sliceY = yNorm * (canvasHeight * 0.88);
-      const sliceH = Math.max(10, canvasHeight * (0.032 + intensity * 0.05));
+      const sliceH = Math.max(6, canvasHeight * (0.018 + intensity * 0.028));
       const xOffset =
-        (seed >= 0 ? 1 : -1) * Math.max(0.35, Math.abs(seed)) * shift * 2.4;
-      ctx.globalAlpha = (0.45 + intensity * 0.45) * opacity;
+        (seed >= 0 ? 1 : -1) * Math.max(0.3, Math.abs(seed)) * shift * 1.8;
+      ctx.globalAlpha = (0.35 + intensity * 0.45) * opacity;
       ctx.drawImage(
         snapshot,
         0,
@@ -820,15 +846,6 @@ function drawGlitchOverlayPass(
       );
     }
   }
-
-  ctx.globalAlpha = 0.22 * intensity * opacity;
-  ctx.fillStyle = pulse > 0.65 ? '#EC4899' : '#06B6D4';
-  ctx.fillRect(
-    0,
-    (currentTime * 210 + canvasHeight * 0.28) % canvasHeight,
-    canvasWidth,
-    Math.max(5, canvasHeight * 0.018)
-  );
   ctx.restore();
 }
 
@@ -844,8 +861,8 @@ function drawTimedFilterAndGlitchEffects(
     if (currentTime < ef.startTime || currentTime > ef.endTime) continue;
 
     const intensity = Math.max(0, Math.min(1, ef.intensity));
-    if (intensity <= 0.01) continue;
-    const opacity = Math.max(0.05, Math.min(1, ef.opacity));
+    const opacity = Math.max(0, Math.min(1, ef.opacity));
+    if (intensity <= 0.01 || opacity <= 0.01) continue;
 
     const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
     if (!snapshot) continue;
@@ -894,149 +911,257 @@ function drawTimedFilterAndGlitchEffects(
   }
 }
 
-function drawVectorHeart(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  size: number
-) {
-  const s = size * 0.5;
-  ctx.beginPath();
-  ctx.moveTo(x, y + s * 0.7);
-  ctx.bezierCurveTo(x - s * 1.4, y - s * 0.2, x - s * 0.8, y - s * 1.2, x, y - s * 0.35);
-  ctx.bezierCurveTo(x + s * 0.8, y - s * 1.2, x + s * 1.4, y - s * 0.2, x, y + s * 0.7);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawVectorStar(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  outerR: number
-) {
-  const innerR = outerR * 0.44;
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outerR : innerR;
-    const angle = (Math.PI / 5) * i - Math.PI / 2;
-    const x = cx + Math.cos(angle) * r;
-    const y = cy + Math.sin(angle) * r;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawCartoonOrSketchPass(
+/**
+ * 60fps Cinematic Glow / Halation: isolates bright highlights on a downscaled
+ * scratch canvas and composites a warm dreamy film bloom via Screen blend.
+ */
+function drawHalationPass(
   ctx: CanvasRenderingContext2D,
   snapshot: HTMLCanvasElement,
   canvasWidth: number,
   canvasHeight: number,
-  mode: 'cartoon' | 'pencil-sketch',
   intensity: number,
   opacity: number,
   isExport: boolean
 ) {
-  const maxDim = isExport ? 640 : 420;
+  const maxDim = isExport ? 420 : 280;
   const scale = Math.min(1, maxDim / Math.max(canvasWidth, canvasHeight));
-  const w = Math.max(24, Math.round(canvasWidth * scale));
-  const h = Math.max(24, Math.round(canvasHeight * scale));
+  const w = Math.max(32, Math.round(canvasWidth * scale));
+  const h = Math.max(32, Math.round(canvasHeight * scale));
 
-  const work = getScratchCanvas(`stylize-${mode}`);
-  if (work.width !== w || work.height !== h) {
-    work.width = w;
-    work.height = h;
+  const hiCanvas = getScratchCanvas('halation-hi');
+  if (hiCanvas.width !== w || hiCanvas.height !== h) {
+    hiCanvas.width = w;
+    hiCanvas.height = h;
   }
-  const wctx = work.getContext('2d', {willReadFrequently: true});
-  if (!wctx) return;
+  const hctx = hiCanvas.getContext('2d', {willReadFrequently: true});
+  if (!hctx) return;
 
-  wctx.clearRect(0, 0, w, h);
-  wctx.drawImage(snapshot, 0, 0, w, h);
+  hctx.clearRect(0, 0, w, h);
+  hctx.drawImage(snapshot, 0, 0, w, h);
 
   try {
-    const imgData = wctx.getImageData(0, 0, w, h);
-    const data = imgData.data;
-    const out = new Uint8ClampedArray(data.length);
-
-    if (mode === 'cartoon') {
-      const levels = Math.max(3, Math.round(7 - intensity * 4));
-      const step = 255 / levels;
-      const edgeThresh = 46 - intensity * 20;
-
-      for (let y = 0; y < h; y++) {
-        const yNext = y < h - 1 ? y + 1 : y;
-        for (let x = 0; x < w; x++) {
-          const xNext = x < w - 1 ? x + 1 : x;
-          const i = (y * w + x) * 4;
-          const iRight = (y * w + xNext) * 4;
-          const iDown = (yNext * w + x) * 4;
-
-          const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          const lumR =
-            0.299 * data[iRight] + 0.587 * data[iRight + 1] + 0.114 * data[iRight + 2];
-          const lumD =
-            0.299 * data[iDown] + 0.587 * data[iDown + 1] + 0.114 * data[iDown + 2];
-          const edge = Math.abs(lum - lumR) + Math.abs(lum - lumD);
-
-          if (edge > edgeThresh) {
-            out[i] = 18;
-            out[i + 1] = 18;
-            out[i + 2] = 24;
-          } else {
-            // Boost saturation slightly & quantize
-            const r = Math.min(255, Math.round(data[i] / step) * step);
-            const g = Math.min(255, Math.round(data[i + 1] / step) * step);
-            const b = Math.min(255, Math.round(data[i + 2] / step) * step);
-            out[i] = r;
-            out[i + 1] = g;
-            out[i + 2] = b;
-          }
-          out[i + 3] = 255;
-        }
+    const img = hctx.getImageData(0, 0, w, h);
+    const data = img.data;
+    const thresh = 175 - intensity * 45; // 175 -> 130
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (lum <= thresh) {
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+        data[i + 3] = 0;
+      } else {
+        const k = Math.min(1, (lum - thresh) / (255 - thresh));
+        // Subtle warm film halation tint on bright highlights
+        data[i] = Math.min(255, Math.round(r * 1.12));
+        data[i + 1] = Math.min(255, Math.round(g * 0.96));
+        data[i + 2] = Math.min(255, Math.round(b * 0.84));
+        data[i + 3] = Math.round(k * 255);
       }
-    } else {
-      // Pencil Sketch: graphite edge contour + paper tone
-      const edgeScale = 1.6 + intensity * 3.4;
-      for (let y = 0; y < h; y++) {
-        const yNext = y < h - 1 ? y + 1 : y;
-        for (let x = 0; x < w; x++) {
-          const xNext = x < w - 1 ? x + 1 : x;
-          const i = (y * w + x) * 4;
-          const iRight = (y * w + xNext) * 4;
-          const iDown = (yNext * w + x) * 4;
+    }
+    hctx.putImageData(img, 0, 0);
+  } catch {
+    // fallback if cross-origin
+  }
 
-          const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          const lumR =
-            0.299 * data[iRight] + 0.587 * data[iRight + 1] + 0.114 * data[iRight + 2];
-          const lumD =
-            0.299 * data[iDown] + 0.587 * data[iDown + 1] + 0.114 * data[iDown + 2];
-          const edge = Math.abs(lum - lumR) + Math.abs(lum - lumD);
+  const blurCanvas = getScratchCanvas('halation-blur');
+  if (blurCanvas.width !== w || blurCanvas.height !== h) {
+    blurCanvas.width = w;
+    blurCanvas.height = h;
+  }
+  const bctx = blurCanvas.getContext('2d');
+  if (!bctx) return;
+  bctx.clearRect(0, 0, w, h);
+  bctx.save();
+  bctx.filter = `blur(${(6 + intensity * 10).toFixed(1)}px)`;
+  bctx.drawImage(hiCanvas, 0, 0, w, h);
+  bctx.restore();
 
-          const tone = Math.max(
-            22,
-            Math.min(246, 244 - edge * edgeScale + (lum - 128) * 0.18)
-          );
-          out[i] = tone;
-          out[i + 1] = tone - 2;
-          out[i + 2] = Math.max(18, tone - 8);
-          out[i + 3] = 255;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = Math.min(0.95, (0.35 + intensity * 0.6) * opacity);
+  ctx.drawImage(blurCanvas, 0, 0, canvasWidth, canvasHeight);
+  ctx.restore();
+}
+
+/**
+ * 60fps Neon Edge / Cyber Glow: crisp glowing rim highlights around high-contrast
+ * edges using a fast downscaled Sobel edge pass + Screen bloom.
+ */
+function drawNeonEdgePass(
+  ctx: CanvasRenderingContext2D,
+  snapshot: HTMLCanvasElement,
+  canvasWidth: number,
+  canvasHeight: number,
+  intensity: number,
+  opacity: number,
+  localTime: number,
+  isExport: boolean
+) {
+  const maxDim = isExport ? 420 : 280;
+  const scale = Math.min(1, maxDim / Math.max(canvasWidth, canvasHeight));
+  const w = Math.max(32, Math.round(canvasWidth * scale));
+  const h = Math.max(32, Math.round(canvasHeight * scale));
+
+  const edgeCanvas = getScratchCanvas('neon-edge-raw');
+  if (edgeCanvas.width !== w || edgeCanvas.height !== h) {
+    edgeCanvas.width = w;
+    edgeCanvas.height = h;
+  }
+  const ectx = edgeCanvas.getContext('2d', {willReadFrequently: true});
+  if (!ectx) return;
+
+  ectx.clearRect(0, 0, w, h);
+  ectx.drawImage(snapshot, 0, 0, w, h);
+
+  try {
+    const img = ectx.getImageData(0, 0, w, h);
+    const src = img.data;
+    const out = new Uint8ClampedArray(src.length);
+    const thresh = Math.max(24, 58 - intensity * 26);
+    const phase = Math.sin(localTime * 1.4) * 0.5 + 0.5;
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = (y * w + x) * 4;
+        const iL = i - 4;
+        const iR = i + 4;
+        const iU = i - w * 4;
+        const iD = i + w * 4;
+
+        const lumL =
+          0.299 * src[iL] + 0.587 * src[iL + 1] + 0.114 * src[iL + 2];
+        const lumR =
+          0.299 * src[iR] + 0.587 * src[iR + 1] + 0.114 * src[iR + 2];
+        const lumU =
+          0.299 * src[iU] + 0.587 * src[iU + 1] + 0.114 * src[iU + 2];
+        const lumD =
+          0.299 * src[iD] + 0.587 * src[iD + 1] + 0.114 * src[iD + 2];
+
+        const mag = Math.abs(lumR - lumL) + Math.abs(lumD - lumU);
+        if (mag > thresh) {
+          const norm = Math.min(1, (mag - thresh) / 95);
+          const mix = (x / w) * 0.7 + phase * 0.3;
+          // Electric Cyan -> Cyber Magenta gradient along edges
+          out[i] = Math.round(34 + mix * 210);
+          out[i + 1] = Math.round(211 - mix * 140);
+          out[i + 2] = Math.round(248 - mix * 50);
+          out[i + 3] = Math.round(norm * 255);
         }
       }
     }
+    ectx.putImageData(new ImageData(out, w, h), 0, 0);
 
-    wctx.putImageData(new ImageData(out, w, h), 0, 0);
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, (0.35 + intensity * 0.65) * opacity);
-    ctx.drawImage(work, 0, 0, canvasWidth, canvasHeight);
-    ctx.restore();
+    const glowCanvas = getScratchCanvas('neon-edge-glow');
+    if (glowCanvas.width !== w || glowCanvas.height !== h) {
+      glowCanvas.width = w;
+      glowCanvas.height = h;
+    }
+    const gctx = glowCanvas.getContext('2d');
+    if (gctx) {
+      gctx.clearRect(0, 0, w, h);
+      gctx.save();
+      gctx.filter = `blur(${(2.5 + intensity * 4.5).toFixed(1)}px)`;
+      gctx.drawImage(edgeCanvas, 0, 0, w, h);
+      gctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = Math.min(0.95, (0.35 + intensity * 0.6) * opacity);
+      ctx.drawImage(glowCanvas, 0, 0, canvasWidth, canvasHeight);
+      ctx.globalAlpha = Math.min(0.85, (0.25 + intensity * 0.55) * opacity);
+      ctx.drawImage(edgeCanvas, 0, 0, canvasWidth, canvasHeight);
+      ctx.restore();
+    }
   } catch {
-    // ignore cross-origin issues gracefully
+    // ignore cross-origin fallback
   }
 }
 
-function drawPartyAndCinemaVfx(
+/**
+ * 60fps Dreamy Blur Vignette (Focus Pull): keeps center subject razor-sharp
+ * while softly blurring and gently darkening the outer edges.
+ */
+function drawFocusPullPass(
+  ctx: CanvasRenderingContext2D,
+  snapshot: HTMLCanvasElement,
+  canvasWidth: number,
+  canvasHeight: number,
+  intensity: number,
+  opacity: number,
+  isExport: boolean
+) {
+  const maxDim = isExport ? 540 : 380;
+  const scale = Math.min(1, maxDim / Math.max(canvasWidth, canvasHeight));
+  const w = Math.max(32, Math.round(canvasWidth * scale));
+  const h = Math.max(32, Math.round(canvasHeight * scale));
+
+  const blurWork = getScratchCanvas('focus-pull-blur');
+  if (blurWork.width !== w || blurWork.height !== h) {
+    blurWork.width = w;
+    blurWork.height = h;
+  }
+  const bctx = blurWork.getContext('2d');
+  if (!bctx) return;
+
+  bctx.clearRect(0, 0, w, h);
+  bctx.save();
+  bctx.filter = `blur(${(4 + intensity * 12).toFixed(1)}px)`;
+  bctx.drawImage(snapshot, 0, 0, w, h);
+
+  // Punch out crisp center using destination-out radial mask
+  bctx.globalCompositeOperation = 'destination-out';
+  const cx = w * 0.5;
+  const cy = h * 0.48;
+  const outerR = Math.hypot(w, h) * 0.54;
+  const clearR = outerR * (0.42 - intensity * 0.14);
+  const maskGrad = bctx.createRadialGradient(
+    cx,
+    cy,
+    Math.max(4, clearR * 0.55),
+    cx,
+    cy,
+    outerR
+  );
+  maskGrad.addColorStop(0, 'rgba(0,0,0,1)');
+  maskGrad.addColorStop(0.55, 'rgba(0,0,0,0.82)');
+  maskGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  bctx.fillStyle = maskGrad;
+  bctx.fillRect(0, 0, w, h);
+  bctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = Math.min(0.95, (0.45 + intensity * 0.52) * opacity);
+  ctx.drawImage(blurWork, 0, 0, canvasWidth, canvasHeight);
+
+  // Subtle darkening outer vignette to frame the subject
+  const vCx = canvasWidth * 0.5;
+  const vCy = canvasHeight * 0.48;
+  const vOuter = Math.hypot(canvasWidth, canvasHeight) * 0.56;
+  const vGrad = ctx.createRadialGradient(
+    vCx,
+    vCy,
+    vOuter * 0.36,
+    vCx,
+    vCy,
+    vOuter
+  );
+  vGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  vGrad.addColorStop(
+    1,
+    `rgba(5, 7, 12, ${(0.45 * intensity * opacity).toFixed(3)})`
+  );
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = vGrad;
+  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  ctx.restore();
+}
+
+function drawStudioAndCinemaVfx(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
   canvasHeight: number,
@@ -1048,195 +1173,166 @@ function drawPartyAndCinemaVfx(
   const scaleFactor = Math.min(canvasWidth, canvasHeight) / 720;
 
   for (const ef of effectItems) {
-    if (ef.category !== 'party' && ef.category !== 'cinema') continue;
+    if (ef.category !== 'studio' && ef.category !== 'cinema') continue;
     if (currentTime < ef.startTime || currentTime > ef.endTime) continue;
 
     const intensity = Math.max(0, Math.min(1, ef.intensity));
-    if (intensity <= 0.01) continue;
-    const opacity = Math.max(0.05, Math.min(1, ef.opacity));
+    const opacity = Math.max(0, Math.min(1, ef.opacity));
+    if (intensity <= 0.01 || opacity <= 0.01) continue;
     const localTime = Math.max(0, currentTime - ef.startTime);
 
-    if (ef.type === 'mirror') {
+    if (ef.type === 'halation') {
       const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, (0.35 + intensity * 0.65) * opacity);
-      // Mirror left half cleanly onto right half
-      ctx.translate(canvasWidth, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(
-        snapshot,
-        0,
-        0,
-        canvasWidth / 2,
-        canvasHeight,
-        0,
-        0,
-        canvasWidth / 2,
-        canvasHeight
-      );
-      ctx.restore();
+      if (snapshot) {
+        drawHalationPass(
+          ctx,
+          snapshot,
+          canvasWidth,
+          canvasHeight,
+          intensity,
+          opacity,
+          isExport
+        );
+      }
       continue;
     }
 
-    if (ef.type === 'split-screen') {
+    if (ef.type === 'neon-edge') {
       const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      const isQuad = intensity > 0.55;
+      if (snapshot) {
+        drawNeonEdgePass(
+          ctx,
+          snapshot,
+          canvasWidth,
+          canvasHeight,
+          intensity,
+          opacity,
+          localTime,
+          isExport
+        );
+      }
+      continue;
+    }
+
+    if (ef.type === 'golden-hour') {
+      const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
+      if (snapshot) {
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        ctx.filter = `brightness(${100 + Math.round(intensity * 10)}%) saturate(${100 + Math.round(intensity * 32)}%) sepia(${Math.round(intensity * 24)}%) hue-rotate(${(-intensity * 5).toFixed(1)}deg)`;
+        ctx.drawImage(snapshot, 0, 0, canvasWidth, canvasHeight);
+        ctx.restore();
+      }
       ctx.save();
-      ctx.globalAlpha = opacity;
-      ctx.fillStyle = '#000000';
+      ctx.globalCompositeOperation = 'soft-light';
+      const warmWash = ctx.createLinearGradient(0, 0, canvasWidth, canvasHeight);
+      warmWash.addColorStop(
+        0,
+        `rgba(251, 191, 36, ${(0.34 * intensity * opacity).toFixed(3)})`
+      );
+      warmWash.addColorStop(
+        1,
+        `rgba(217, 119, 6, ${(0.24 * intensity * opacity).toFixed(3)})`
+      );
+      ctx.fillStyle = warmWash;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-      if (!isQuad) {
-        // 2-way split side by side
-        const halfW = canvasWidth / 2;
-        ctx.drawImage(
-          snapshot,
-          canvasWidth * 0.25,
-          0,
-          halfW,
-          canvasHeight,
-          0,
-          0,
-          halfW,
-          canvasHeight
-        );
-        ctx.drawImage(
-          snapshot,
-          canvasWidth * 0.25,
-          0,
-          halfW,
-          canvasHeight,
-          halfW,
-          0,
-          halfW,
-          canvasHeight
-        );
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.fillRect(halfW - 1.5, 0, 3, canvasHeight);
-      } else {
-        // 4-way quad split
-        const qw = canvasWidth / 2;
-        const qh = canvasHeight / 2;
-        ctx.drawImage(snapshot, 0, 0, qw, qh);
-        ctx.drawImage(snapshot, qw, 0, qw, qh);
-        ctx.drawImage(snapshot, 0, qh, qw, qh);
-        ctx.drawImage(snapshot, qw, qh, qw, qh);
-        ctx.fillStyle = 'rgba(255,255,255,0.65)';
-        ctx.fillRect(qw - 1.5, 0, 3, canvasHeight);
-        ctx.fillRect(0, qh - 1.5, canvasWidth, 3);
-      }
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'double-exposure') {
-      const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      ctx.save();
-      const driftX = Math.sin(localTime * 1.1) * canvasWidth * 0.04 * intensity;
-      const driftY = Math.cos(localTime * 0.9) * canvasHeight * 0.03 * intensity;
-      const zoom = 1.14 + intensity * 0.18;
+      // Soft sunlight upper-corner warmth
       ctx.globalCompositeOperation = 'screen';
-      ctx.globalAlpha = (0.28 + intensity * 0.45) * opacity;
-      ctx.translate(canvasWidth / 2 + driftX, canvasHeight / 2 + driftY);
-      ctx.scale(zoom, zoom);
-      ctx.filter = 'hue-rotate(25deg) contrast(115%)';
-      ctx.drawImage(
-        snapshot,
-        -canvasWidth / 2,
-        -canvasHeight / 2,
-        canvasWidth,
-        canvasHeight
-      );
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'rgb-split') {
-      const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      const sep =
-        (6 + intensity * 26 + Math.sin(localTime * 5) * 4) *
-        (canvasWidth / 1280);
-      ctx.save();
-      ctx.globalCompositeOperation = 'screen';
-      ctx.globalAlpha = Math.min(0.85, (0.35 + intensity * 0.45) * opacity);
-      ctx.drawImage(snapshot, sep, -sep * 0.25, canvasWidth, canvasHeight);
-      ctx.drawImage(snapshot, -sep, sep * 0.25, canvasWidth, canvasHeight);
-      // Warm/Cool prism fringe edges
-      ctx.fillStyle = `rgba(239, 68, 68, ${(0.12 * intensity * opacity).toFixed(3)})`;
-      ctx.fillRect(0, 0, sep * 1.4, canvasHeight);
-      ctx.fillStyle = `rgba(6, 182, 212, ${(0.12 * intensity * opacity).toFixed(3)})`;
-      ctx.fillRect(canvasWidth - sep * 1.4, 0, sep * 1.4, canvasHeight);
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'vhs') {
-      const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      ctx.save();
-      // Slight chroma shift
-      const shift = (3 + intensity * 8) * scaleFactor;
-      ctx.globalCompositeOperation = 'screen';
-      ctx.globalAlpha = 0.28 * intensity * opacity;
-      ctx.drawImage(snapshot, shift, 0, canvasWidth, canvasHeight);
-      ctx.drawImage(snapshot, -shift, 0, canvasWidth, canvasHeight);
-
-      // CRT Scanlines
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = `rgba(0, 0, 0, ${(0.18 + intensity * 0.22) * opacity})`;
-      const step = Math.max(4, Math.round(5 * scaleFactor));
-      for (let y = 0; y < canvasHeight; y += step) {
-        ctx.fillRect(0, y, canvasWidth, Math.max(1.5, step * 0.4));
-      }
-
-      // Tracking bar wobble
-      const trackY = ((localTime * 110) % (canvasHeight + 80)) - 40;
-      const trackH = (18 + intensity * 26) * scaleFactor;
-      ctx.globalAlpha = 0.32 * intensity * opacity;
-      ctx.drawImage(
-        snapshot,
+      const sunR = Math.hypot(canvasWidth, canvasHeight) * 0.65;
+      const sunGrad = ctx.createRadialGradient(
+        canvasWidth * 0.12,
+        canvasHeight * 0.1,
         0,
-        Math.max(0, Math.min(canvasHeight - trackH, trackY)),
-        canvasWidth,
-        trackH,
-        Math.sin(localTime * 28) * 14 * scaleFactor,
-        trackY,
-        canvasWidth,
-        trackH
+        canvasWidth * 0.12,
+        canvasHeight * 0.1,
+        sunR
       );
-      ctx.fillStyle = `rgba(255, 255, 255, ${(0.14 * intensity * opacity).toFixed(3)})`;
-      ctx.fillRect(0, trackY, canvasWidth, 2 * scaleFactor);
+      sunGrad.addColorStop(
+        0,
+        `rgba(255, 232, 168, ${(0.26 * intensity * opacity).toFixed(3)})`
+      );
+      sunGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = sunGrad;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
       ctx.restore();
       continue;
     }
 
-    if (ef.type === 'cartoon' || ef.type === 'pencil-sketch') {
+    if (ef.type === 'bokeh-particles') {
+      const count = Math.round(14 + intensity * 26);
+      const baseSeed = hashSeed(ef.id);
+      const colors = [
+        '253, 224, 71', // warm gold
+        '251, 191, 36', // amber
+        '244, 114, 182', // soft rose
+        '125, 211, 252', // dreamy sky
+        '255, 247, 220', // champagne
+      ];
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      for (let i = 0; i < count; i++) {
+        const r1 = seededRand(baseSeed + i * 7 + 1);
+        const r2 = seededRand(baseSeed + i * 7 + 2);
+        const r3 = seededRand(baseSeed + i * 7 + 3);
+        const r4 = seededRand(baseSeed + i * 7 + 4);
+
+        const depth = 0.4 + r3 * 0.6;
+        const speedY = (14 + depth * 28) * scaleFactor;
+        const spanH = canvasHeight + 120 * scaleFactor;
+        const x =
+          (r1 * canvasWidth +
+            Math.sin(localTime * (0.45 + r2 * 0.7) + i) * 38 * scaleFactor +
+            canvasWidth) %
+          canvasWidth;
+        const y =
+          (((r2 * spanH - localTime * speedY) % spanH) + spanH) % spanH -
+          60 * scaleFactor;
+        const radius =
+          (14 + depth * 36) * scaleFactor * (0.7 + intensity * 0.45);
+        const twinkle = 0.6 + 0.4 * Math.sin(localTime * (1.2 + r4 * 1.8) + i);
+        const alpha = Math.min(
+          0.62,
+          (0.16 + depth * 0.24) * twinkle * (0.4 + intensity * 0.6) * opacity
+        );
+        const rgb = colors[i % colors.length];
+
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        grad.addColorStop(0, `rgba(${rgb}, ${(alpha * 0.55).toFixed(3)})`);
+        grad.addColorStop(0.68, `rgba(${rgb}, ${(alpha * 0.88).toFixed(3)})`);
+        grad.addColorStop(0.92, `rgba(${rgb}, ${(alpha * 0.35).toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${rgb}, 0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      continue;
+    }
+
+    if (ef.type === 'focus-pull') {
       const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      drawCartoonOrSketchPass(
-        ctx,
-        snapshot,
-        canvasWidth,
-        canvasHeight,
-        ef.type,
-        intensity,
-        opacity,
-        isExport
-      );
+      if (snapshot) {
+        drawFocusPullPass(
+          ctx,
+          snapshot,
+          canvasWidth,
+          canvasHeight,
+          intensity,
+          opacity,
+          isExport
+        );
+      }
       continue;
     }
 
     if (ef.type === 'disco') {
-      // Beat-synced pulse: align to analyzed beats if present, else 128 BPM (~0.468s)
       let beatPulse = Math.pow(
-        0.5 + 0.5 * Math.sin(currentTime * ((128 / 60) * Math.PI * 2)),
+        0.5 + 0.5 * Math.sin(currentTime * ((126 / 60) * Math.PI * 2)),
         2
       );
-      let beatIndex = Math.floor(currentTime / 0.46875);
+      let beatIndex = Math.floor(currentTime / 0.476);
       if (beatTimes.length > 0) {
         let minDist = 999;
         let closestIdx = 0;
@@ -1254,94 +1350,58 @@ function drawPartyAndCinemaVfx(
       }
 
       const palette = [
-        '236, 72, 153', // pink
-        '56, 189, 248', // cyan
-        '168, 85, 247', // purple
-        '250, 204, 21', // gold
-        '34, 197, 94', // neon green
+        '236, 72, 153',
+        '56, 189, 248',
+        '168, 85, 247',
+        '250, 204, 21',
+        '52, 211, 153',
       ];
       const c1 = palette[beatIndex % palette.length];
       const c2 = palette[(beatIndex + 2) % palette.length];
 
       ctx.save();
       ctx.globalCompositeOperation = 'screen';
-      const sx1 = canvasWidth * (0.25 + 0.25 * Math.sin(localTime * 3.1));
-      const sy1 = canvasHeight * (0.3 + 0.2 * Math.cos(localTime * 2.4));
+      const sx1 = canvasWidth * (0.24 + 0.24 * Math.sin(localTime * 2.6));
+      const sy1 = canvasHeight * (0.28 + 0.18 * Math.cos(localTime * 2.1));
       const g1 = ctx.createRadialGradient(
         sx1,
         sy1,
         0,
         sx1,
         sy1,
-        Math.hypot(canvasWidth, canvasHeight) * 0.55
+        Math.hypot(canvasWidth, canvasHeight) * 0.52
       );
       g1.addColorStop(
         0,
-        `rgba(${c1}, ${((0.25 + beatPulse * 0.38) * intensity * opacity).toFixed(3)})`
+        `rgba(${c1}, ${((0.18 + beatPulse * 0.3) * intensity * opacity).toFixed(3)})`
       );
       g1.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g1;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-      const sx2 = canvasWidth * (0.75 - 0.22 * Math.cos(localTime * 2.8));
-      const sy2 = canvasHeight * (0.65 - 0.22 * Math.sin(localTime * 3.5));
+      const sx2 = canvasWidth * (0.76 - 0.2 * Math.cos(localTime * 2.4));
+      const sy2 = canvasHeight * (0.68 - 0.2 * Math.sin(localTime * 2.9));
       const g2 = ctx.createRadialGradient(
         sx2,
         sy2,
         0,
         sx2,
         sy2,
-        Math.hypot(canvasWidth, canvasHeight) * 0.5
+        Math.hypot(canvasWidth, canvasHeight) * 0.48
       );
       g2.addColorStop(
         0,
-        `rgba(${c2}, ${((0.22 + beatPulse * 0.35) * intensity * opacity).toFixed(3)})`
+        `rgba(${c2}, ${((0.16 + beatPulse * 0.26) * intensity * opacity).toFixed(3)})`
       );
       g2.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g2;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      // Subtle disco strobe flash
-      ctx.fillStyle = `rgba(255, 255, 255, ${(beatPulse * 0.14 * intensity * opacity).toFixed(3)})`;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'heart-star-burst') {
-      const count = Math.round(16 + intensity * 34);
-      const baseSeed = hashSeed(ef.id);
-      ctx.save();
-      for (let i = 0; i < count; i++) {
-        const r1 = seededRand(baseSeed + i * 5 + 1);
-        const r2 = seededRand(baseSeed + i * 5 + 2);
-        const r3 = seededRand(baseSeed + i * 5 + 3);
-        const r4 = seededRand(baseSeed + i * 5 + 4);
-
-        const cycle = (localTime * (0.45 + r3 * 0.55) + r2) % 1;
-        const cx =
-          canvasWidth * (0.1 + r1 * 0.8) +
-          Math.sin(localTime * 2.2 + i) * 28 * scaleFactor;
-        const cy = canvasHeight * (1.02 - cycle * 1.12);
-        const sz = (12 + r4 * 22) * scaleFactor * (0.75 + intensity * 0.55);
-        const fade = Math.sin(cycle * Math.PI);
-        const alpha = Math.min(0.95, fade * (0.55 + intensity * 0.45) * opacity);
-
-        ctx.globalAlpha = alpha;
-        if (i % 2 === 0) {
-          ctx.fillStyle = r3 > 0.5 ? '#FB7185' : '#F43F5E';
-          drawVectorHeart(ctx, cx, cy, sz);
-        } else {
-          ctx.fillStyle = r3 > 0.5 ? '#FACC15' : '#38BDF8';
-          drawVectorStar(ctx, cx, cy, sz * 0.65);
-        }
-      }
       ctx.restore();
       continue;
     }
 
     if (ef.type === 'letterbox') {
-      const barH = Math.round(canvasHeight * (0.04 + intensity * 0.14));
+      const barH = Math.round(canvasHeight * (0.04 + intensity * 0.13));
       ctx.save();
       ctx.fillStyle = `rgba(0, 0, 0, ${opacity.toFixed(3)})`;
       ctx.fillRect(0, 0, canvasWidth, barH);
@@ -1375,7 +1435,7 @@ function drawPartyAndCinemaVfx(
 
         ctx.save();
         ctx.globalCompositeOperation = 'overlay';
-        ctx.globalAlpha = Math.min(0.65, (0.18 + intensity * 0.42) * opacity);
+        ctx.globalAlpha = Math.min(0.48, (0.14 + intensity * 0.34) * opacity);
         ctx.drawImage(grainCanvas, 0, 0, canvasWidth, canvasHeight);
         ctx.restore();
       }
@@ -1383,41 +1443,49 @@ function drawPartyAndCinemaVfx(
     }
 
     if (ef.type === 'lens-flare') {
-      const fx = canvasWidth * (0.22 + 0.56 * (0.5 + 0.5 * Math.sin(localTime * 0.65)));
-      const fy = canvasHeight * (0.22 + 0.12 * Math.cos(localTime * 0.5));
+      const fx =
+        canvasWidth * (0.22 + 0.56 * (0.5 + 0.5 * Math.sin(localTime * 0.55)));
+      const fy = canvasHeight * (0.2 + 0.1 * Math.cos(localTime * 0.45));
       ctx.save();
       ctx.globalCompositeOperation = 'screen';
 
-      // Primary sun orb
-      const rMain = Math.hypot(canvasWidth, canvasHeight) * (0.24 + intensity * 0.2);
+      const rMain =
+        Math.hypot(canvasWidth, canvasHeight) * (0.2 + intensity * 0.18);
       const gOrb = ctx.createRadialGradient(fx, fy, 0, fx, fy, rMain);
-      gOrb.addColorStop(0, `rgba(255, 250, 235, ${(0.85 * intensity * opacity).toFixed(3)})`);
-      gOrb.addColorStop(0.25, `rgba(253, 186, 116, ${(0.48 * intensity * opacity).toFixed(3)})`);
+      gOrb.addColorStop(
+        0,
+        `rgba(255, 250, 235, ${(0.65 * intensity * opacity).toFixed(3)})`
+      );
+      gOrb.addColorStop(
+        0.25,
+        `rgba(253, 186, 116, ${(0.36 * intensity * opacity).toFixed(3)})`
+      );
       gOrb.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = gOrb;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-      // Anamorphic horizontal streak
-      const streakH = (10 + intensity * 18) * scaleFactor;
+      const streakH = (8 + intensity * 14) * scaleFactor;
       const gStreak = ctx.createLinearGradient(0, fy, canvasWidth, fy);
       gStreak.addColorStop(0, 'rgba(56, 189, 248, 0)');
-      gStreak.addColorStop(0.5, `rgba(125, 211, 252, ${(0.65 * intensity * opacity).toFixed(3)})`);
+      gStreak.addColorStop(
+        0.5,
+        `rgba(125, 211, 252, ${(0.45 * intensity * opacity).toFixed(3)})`
+      );
       gStreak.addColorStop(1, 'rgba(56, 189, 248, 0)');
       ctx.fillStyle = gStreak;
       ctx.fillRect(0, fy - streakH / 2, canvasWidth, streakH);
 
-      // Bokeh ghosts along optical axis
       const cx = canvasWidth / 2;
       const cy = canvasHeight / 2;
-      for (let k = 1; k <= 4; k++) {
-        const t = k * 0.45;
+      for (let k = 1; k <= 3; k++) {
+        const t = k * 0.48;
         const bx = cx + (cx - fx) * t;
         const by = cy + (cy - fy) * t;
-        const br = (14 + k * 9) * scaleFactor * (0.6 + intensity * 0.6);
+        const br = (12 + k * 8) * scaleFactor * (0.6 + intensity * 0.5);
         ctx.fillStyle =
           k % 2 === 0
-            ? `rgba(251, 146, 60, ${(0.22 * intensity * opacity).toFixed(3)})`
-            : `rgba(56, 189, 248, ${(0.2 * intensity * opacity).toFixed(3)})`;
+            ? `rgba(251, 146, 60, ${(0.18 * intensity * opacity).toFixed(3)})`
+            : `rgba(56, 189, 248, ${(0.16 * intensity * opacity).toFixed(3)})`;
         ctx.beginPath();
         ctx.arc(bx, by, br, 0, Math.PI * 2);
         ctx.fill();
@@ -1427,70 +1495,40 @@ function drawPartyAndCinemaVfx(
     }
 
     if (ef.type === 'light-leak') {
-      const lx = canvasWidth * (0.08 + 0.14 * Math.sin(localTime * 0.9));
-      const ly = canvasHeight * (0.18 + 0.2 * Math.cos(localTime * 0.7));
+      const lx = canvasWidth * (0.06 + 0.1 * Math.sin(localTime * 0.8));
+      const ly = canvasHeight * (0.16 + 0.16 * Math.cos(localTime * 0.65));
       ctx.save();
       ctx.globalCompositeOperation = 'screen';
-      const r1 = Math.hypot(canvasWidth, canvasHeight) * (0.45 + intensity * 0.25);
+      const r1 =
+        Math.hypot(canvasWidth, canvasHeight) * (0.4 + intensity * 0.22);
       const grad1 = ctx.createRadialGradient(lx, ly, 0, lx, ly, r1);
-      grad1.addColorStop(0, `rgba(251, 146, 60, ${(0.68 * intensity * opacity).toFixed(3)})`);
-      grad1.addColorStop(0.45, `rgba(244, 63, 94, ${(0.34 * intensity * opacity).toFixed(3)})`);
+      grad1.addColorStop(
+        0,
+        `rgba(251, 146, 60, ${(0.52 * intensity * opacity).toFixed(3)})`
+      );
+      grad1.addColorStop(
+        0.48,
+        `rgba(244, 63, 94, ${(0.24 * intensity * opacity).toFixed(3)})`
+      );
       grad1.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = grad1;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      const rx = canvasWidth * (0.94 - 0.1 * Math.cos(localTime * 0.8));
-      const ry = canvasHeight * 0.82;
-      const grad2 = ctx.createRadialGradient(rx, ry, 0, rx, ry, r1 * 0.75);
-      grad2.addColorStop(0, `rgba(250, 204, 21, ${(0.45 * intensity * opacity).toFixed(3)})`);
-      grad2.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = grad2;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'film-burn') {
-      const pulse = 0.65 + 0.35 * Math.sin(localTime * 4.2);
-      ctx.save();
-      ctx.globalCompositeOperation = 'screen';
-      const rBurn = Math.hypot(canvasWidth, canvasHeight) * (0.38 + intensity * 0.32);
-      const bx = canvasWidth * (0.88 - 0.15 * Math.sin(localTime * 1.4));
-      const by = canvasHeight * (0.14 + 0.18 * Math.cos(localTime * 1.1));
-      const grad = ctx.createRadialGradient(bx, by, 0, bx, by, rBurn);
-      grad.addColorStop(0, `rgba(255, 237, 213, ${(0.85 * pulse * intensity * opacity).toFixed(3)})`);
-      grad.addColorStop(0.35, `rgba(249, 115, 22, ${(0.65 * pulse * intensity * opacity).toFixed(3)})`);
-      grad.addColorStop(0.7, `rgba(185, 28, 28, ${(0.32 * pulse * intensity * opacity).toFixed(3)})`);
-      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-      ctx.restore();
-      continue;
-    }
-
-    if (ef.type === 'motion-blur') {
-      const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
-      if (!snapshot) continue;
-      const taps = 5;
-      const maxShift = (14 + intensity * 38) * (canvasWidth / 1280);
-      ctx.save();
-      for (let t = 1; t <= taps; t++) {
-        const frac = t / taps;
-        ctx.globalAlpha = (0.28 / taps) * (1.2 - frac * 0.4) * intensity * opacity;
-        ctx.drawImage(snapshot, -frac * maxShift, 0, canvasWidth, canvasHeight);
-        ctx.drawImage(snapshot, frac * maxShift, 0, canvasWidth, canvasHeight);
-      }
       ctx.restore();
       continue;
     }
 
     if (ef.type === 'ai-portrait') {
-      drawFaceGlowBeautyPass(ctx, canvasWidth, canvasHeight, intensity * 95 * opacity);
+      drawFaceGlowBeautyPass(
+        ctx,
+        canvasWidth,
+        canvasHeight,
+        intensity * 90 * opacity
+      );
       const snapshot = drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight);
       if (snapshot) {
         ctx.save();
-        ctx.globalAlpha = 0.25 * intensity * opacity;
-        ctx.filter = `contrast(${112 + Math.round(intensity * 18)}%) saturate(${106 + Math.round(intensity * 12)}%)`;
+        ctx.globalAlpha = 0.22 * intensity * opacity;
+        ctx.filter = `contrast(${110 + Math.round(intensity * 16)}%) saturate(${105 + Math.round(intensity * 10)}%)`;
         ctx.drawImage(snapshot, 0, 0, canvasWidth, canvasHeight);
         ctx.restore();
       }
@@ -1514,17 +1552,17 @@ function drawWeatherEffects(
     }
 
     const intensity = Math.max(0, Math.min(1, ef.intensity));
-    if (intensity <= 0.01) continue;
-    const opacity = Math.max(0.05, Math.min(1, ef.opacity));
+    const opacity = Math.max(0, Math.min(1, ef.opacity));
+    if (intensity <= 0.01 || opacity <= 0.01) continue;
     const localTime = Math.max(0, currentTime - ef.startTime);
     const baseSeed = hashSeed(ef.id);
 
     ctx.save();
 
     if (ef.type === 'rain') {
-      const count = Math.round(70 + intensity * 190);
+      const count = Math.round(55 + intensity * 145);
       ctx.lineCap = 'round';
-      ctx.fillStyle = `rgba(30, 58, 102, ${(0.12 * opacity * intensity).toFixed(3)})`;
+      ctx.fillStyle = `rgba(30, 58, 102, ${(0.06 * opacity * intensity).toFixed(3)})`;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
       for (let i = 0; i < count; i++) {
@@ -1533,35 +1571,35 @@ function drawWeatherEffects(
         const r3 = seededRand(baseSeed + i * 7 + 3);
         const r4 = seededRand(baseSeed + i * 7 + 4);
 
-        const speedY = (820 + r3 * 680) * scaleFactor * (0.75 + intensity * 0.5);
-        const slant = -0.22;
+        const speedY = (840 + r3 * 640) * scaleFactor * (0.75 + intensity * 0.5);
+        const slant = -0.19;
         const ySpan = canvasHeight + 140 * scaleFactor;
         const y = ((r2 * ySpan + localTime * speedY) % ySpan) - 70 * scaleFactor;
         const x = (r1 * canvasWidth + y * slant + canvasWidth * 2) % canvasWidth;
 
         const streakLen =
-          (36 + r4 * 48) * scaleFactor * (0.75 + intensity * 0.45);
-        const alpha = Math.min(0.95, (0.45 + r3 * 0.45) * opacity);
+          (28 + r4 * 40) * scaleFactor * (0.75 + intensity * 0.45);
+        const alpha = Math.min(0.82, (0.28 + r3 * 0.38) * opacity);
 
         ctx.strokeStyle = `rgba(220, 240, 255, ${alpha.toFixed(3)})`;
-        ctx.lineWidth = Math.max(1.5, (2.0 + r4 * 2.1) * scaleFactor);
+        ctx.lineWidth = Math.max(1.1, (1.2 + r4 * 1.4) * scaleFactor);
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(x + streakLen * slant, y + streakLen);
         ctx.stroke();
 
-        if (i % 4 === 0 && y > canvasHeight * 0.84) {
+        if (i % 5 === 0 && y > canvasHeight * 0.85) {
           const splashProgress =
-            (y - canvasHeight * 0.84) / (canvasHeight * 0.16);
-          const radius = (6 + splashProgress * 16) * scaleFactor;
-          ctx.strokeStyle = `rgba(225, 244, 255, ${(alpha * (1 - splashProgress) * 0.78).toFixed(3)})`;
-          ctx.lineWidth = Math.max(1.2, 1.5 * scaleFactor);
+            (y - canvasHeight * 0.85) / (canvasHeight * 0.15);
+          const radius = (5 + splashProgress * 14) * scaleFactor;
+          ctx.strokeStyle = `rgba(225, 244, 255, ${(alpha * (1 - splashProgress) * 0.65).toFixed(3)})`;
+          ctx.lineWidth = Math.max(1, 1.2 * scaleFactor);
           ctx.beginPath();
           ctx.ellipse(
             x,
-            canvasHeight * (0.89 + r1 * 0.08),
+            canvasHeight * (0.9 + r1 * 0.07),
             radius,
-            radius * 0.35,
+            radius * 0.34,
             0,
             0,
             Math.PI * 2
@@ -1570,35 +1608,35 @@ function drawWeatherEffects(
         }
       }
     } else if (ef.type === 'snow') {
-      const count = Math.round(50 + intensity * 140);
+      const count = Math.round(45 + intensity * 125);
       for (let i = 0; i < count; i++) {
         const r1 = seededRand(baseSeed + i * 11 + 1);
         const r2 = seededRand(baseSeed + i * 11 + 2);
         const r3 = seededRand(baseSeed + i * 11 + 3);
         const r4 = seededRand(baseSeed + i * 11 + 4);
 
-        const depth = 0.4 + r3 * 0.6;
+        const depth = 0.35 + r3 * 0.65;
         const speedY =
-          (55 + depth * 125) * scaleFactor * (0.65 + intensity * 0.55);
-        const swayAmp = (16 + r4 * 28) * scaleFactor;
-        const swayFreq = 0.8 + r2 * 1.4;
+          (50 + depth * 115) * scaleFactor * (0.65 + intensity * 0.5);
+        const swayAmp = (16 + r4 * 26) * scaleFactor;
+        const swayFreq = 0.75 + r2 * 1.3;
         const ySpan = canvasHeight + 70 * scaleFactor;
         const y = ((r2 * ySpan + localTime * speedY) % ySpan) - 35 * scaleFactor;
         const x =
           (r1 * canvasWidth +
             Math.sin(localTime * swayFreq + r4 * Math.PI * 2) * swayAmp +
-            localTime * 18 * scaleFactor +
+            localTime * 16 * scaleFactor +
             canvasWidth * 2) %
           canvasWidth;
 
-        const radius = (3.8 + depth * 7.2) * scaleFactor;
-        const alpha = Math.min(0.98, (0.52 + depth * 0.45) * opacity);
+        const radius = (3.2 + depth * 6.4) * scaleFactor;
+        const alpha = Math.min(0.9, (0.4 + depth * 0.42) * opacity);
 
         const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.6);
         grad.addColorStop(0, `rgba(255, 255, 255, ${alpha.toFixed(3)})`);
         grad.addColorStop(
           0.42,
-          `rgba(240, 248, 255, ${(alpha * 0.8).toFixed(3)})`
+          `rgba(240, 248, 255, ${(alpha * 0.75).toFixed(3)})`
         );
         grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
         ctx.fillStyle = grad;
@@ -1607,20 +1645,17 @@ function drawWeatherEffects(
         ctx.fill();
       }
     } else if (ef.type === 'smoke') {
-      const count = Math.round(16 + intensity * 24);
+      const count = Math.round(12 + intensity * 18);
       const mistGrad = ctx.createLinearGradient(
         0,
-        canvasHeight * 0.25,
+        canvasHeight * 0.45,
         0,
         canvasHeight
       );
-      mistGrad.addColorStop(
-        0,
-        `rgba(203, 213, 225, ${(0.08 * opacity * intensity).toFixed(3)})`
-      );
+      mistGrad.addColorStop(0, 'rgba(203, 213, 225, 0)');
       mistGrad.addColorStop(
         1,
-        `rgba(226, 232, 240, ${(0.28 * opacity * intensity).toFixed(3)})`
+        `rgba(226, 232, 240, ${(0.22 * opacity * intensity).toFixed(3)})`
       );
       ctx.fillStyle = mistGrad;
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -1632,33 +1667,34 @@ function drawWeatherEffects(
         const r4 = seededRand(baseSeed + i * 13 + 4);
 
         const puffRadius =
-          (150 + r3 * 240) * scaleFactor * (0.8 + intensity * 0.35);
-        const driftX = (24 + r4 * 36) * scaleFactor;
-        const driftY = (-12 - r2 * 20) * scaleFactor;
+          (140 + r3 * 210) * scaleFactor * (0.8 + intensity * 0.35);
+        const driftX = (20 + r4 * 32) * scaleFactor;
+        const driftY = (-10 - r2 * 16) * scaleFactor;
         const spanW = canvasWidth + puffRadius * 2;
-        const spanH = canvasHeight + puffRadius * 2;
+        const spanH = canvasHeight * 0.6 + puffRadius * 2;
 
         const x =
           ((r1 * spanW +
             localTime * driftX +
-            Math.sin(localTime * 0.4 + i) * 32) %
+            Math.sin(localTime * 0.4 + i) * 28) %
             spanW) -
           puffRadius;
         const y =
-          (((r2 * spanH + localTime * driftY) % spanH) + spanH) % spanH -
-          puffRadius;
+          canvasHeight * 0.4 +
+          ((((r2 * spanH + localTime * driftY) % spanH) + spanH) % spanH -
+            puffRadius);
 
         const breath = 0.75 + 0.25 * Math.sin(localTime * 0.9 + r4 * 6.28);
         const alpha = Math.min(
-          0.55,
-          (0.22 + r3 * 0.22) * opacity * (0.4 + intensity * 0.75) * breath
+          0.38,
+          (0.14 + r3 * 0.16) * opacity * (0.35 + intensity * 0.65) * breath
         );
 
         const grad = ctx.createRadialGradient(x, y, 0, x, y, puffRadius);
         grad.addColorStop(0, `rgba(235, 241, 248, ${alpha.toFixed(3)})`);
         grad.addColorStop(
-          0.5,
-          `rgba(203, 213, 225, ${(alpha * 0.6).toFixed(3)})`
+          0.55,
+          `rgba(203, 213, 225, ${(alpha * 0.55).toFixed(3)})`
         );
         grad.addColorStop(1, 'rgba(203, 213, 225, 0)');
 
@@ -2155,12 +2191,13 @@ export function renderEditorFrame(params: {
     }
   }
 
-  // 2. Main Video / Freeze Frame Layer (with Precision Zoom, Motion, Filters, BG Removal & Pro Transitions)
+  // 2. Main Video / Freeze Frame Layer (with Precision Zoom, Heartbeat Pulse, Motion, Filters, BG Removal & Pro Transitions)
   const timedMotion = computeTimedMotionDelta(
     effectItems,
     currentTime,
     canvasWidth,
-    canvasHeight
+    canvasHeight,
+    beatTimes
   );
 
   if (mainReady && primarySource) {
@@ -2390,7 +2427,7 @@ export function renderEditorFrame(params: {
         effectItems,
         currentTime
       );
-      drawPartyAndCinemaVfx(
+      drawStudioAndCinemaVfx(
         ctx,
         canvasWidth,
         canvasHeight,
@@ -2408,7 +2445,7 @@ export function renderEditorFrame(params: {
       effectItems,
       currentTime
     );
-    drawPartyAndCinemaVfx(
+    drawStudioAndCinemaVfx(
       ctx,
       canvasWidth,
       canvasHeight,

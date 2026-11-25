@@ -23,6 +23,8 @@ import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
   getAudioClipDuration,
+  getSpeedRampMultiplierAtTime,
+  resolveSegmentSourceTime,
   resolveVideoStateAtTime,
 } from './timelineMath';
 
@@ -158,8 +160,10 @@ export async function exportEditedVideo(
 
   const segments = computeVideoTimelineSegments(
     videoClips,
-    audioSettings.playbackSpeed
+    audioSettings.playbackSpeed,
+    effectItems
   );
+  const hasSpeedRamps = effectItems.some((e) => e.type === 'speed-ramp');
   const dims = ASPECT_RATIO_DIMENSIONS[aspectRatio];
 
   const canvas = document.createElement('canvas');
@@ -377,33 +381,49 @@ export async function exportEditedVideo(
       const seg = videoState.primary;
       const outSeg = videoState.outgoing;
 
+      const effectiveRate = Math.max(
+        0.25,
+        Math.min(
+          3,
+          audioSettings.playbackSpeed *
+            getSpeedRampMultiplierAtTime(effectItems, currentTimelineTime)
+        )
+      );
+
       let primarySource: MediaSourceElement | null = null;
       if (seg) {
         if (seg.clip.kind === 'freeze') {
           primarySource = freezeImageMap.get(seg.clip.id) ?? null;
           if (!mainVideoEl.paused) mainVideoEl.pause();
         } else {
-          const expectedSrcTime =
-            seg.clip.trimStart +
-            Math.max(0, currentTimelineTime - seg.timelineStart) *
-              audioSettings.playbackSpeed;
+          const expectedSrcTime = resolveSegmentSourceTime(
+            seg,
+            currentTimelineTime,
+            audioSettings.playbackSpeed,
+            effectItems
+          );
 
           if (activeMainClipUrl !== seg.clip.url) {
             activeMainClipUrl = seg.clip.url;
             mainVideoEl.src = seg.clip.url;
             await waitForMediaReady(mainVideoEl);
-            mainVideoEl.playbackRate = audioSettings.playbackSpeed;
+            mainVideoEl.playbackRate = effectiveRate;
             await seekMedia(mainVideoEl, expectedSrcTime);
             if (!hasAiSegmentation) {
               void mainVideoEl.play().catch(() => {});
             }
           } else if (hasAiSegmentation) {
+            mainVideoEl.playbackRate = effectiveRate;
             await seekMedia(mainVideoEl, expectedSrcTime);
           } else {
+            if (Math.abs(mainVideoEl.playbackRate - effectiveRate) > 0.02) {
+              mainVideoEl.playbackRate = effectiveRate;
+            }
             if (mainVideoEl.paused && !mainVideoEl.ended) {
               void mainVideoEl.play().catch(() => {});
             }
-            if (Math.abs(mainVideoEl.currentTime - expectedSrcTime) > 0.2) {
+            const driftThreshold = hasSpeedRamps ? 0.12 : 0.2;
+            if (Math.abs(mainVideoEl.currentTime - expectedSrcTime) > driftThreshold) {
               await seekMedia(mainVideoEl, expectedSrcTime);
             }
           }
@@ -419,24 +439,31 @@ export async function exportEditedVideo(
           outgoingSource = freezeImageMap.get(outSeg.clip.id) ?? null;
           if (!outgoingVideoEl.paused) outgoingVideoEl.pause();
         } else {
-          const expectedOutTime =
-            outSeg.clip.trimStart +
-            Math.max(0, currentTimelineTime - outSeg.timelineStart) *
-              audioSettings.playbackSpeed;
+          const expectedOutTime = resolveSegmentSourceTime(
+            outSeg,
+            currentTimelineTime,
+            audioSettings.playbackSpeed,
+            effectItems
+          );
 
           if (activeOutgoingUrl !== outSeg.clip.url) {
             activeOutgoingUrl = outSeg.clip.url;
             outgoingVideoEl.src = outSeg.clip.url;
             await waitForMediaReady(outgoingVideoEl);
-            outgoingVideoEl.playbackRate = audioSettings.playbackSpeed;
+            outgoingVideoEl.playbackRate = effectiveRate;
             await seekMedia(outgoingVideoEl, expectedOutTime);
             if (!hasAiSegmentation) {
               void outgoingVideoEl.play().catch(() => {});
             }
           } else if (hasAiSegmentation) {
+            outgoingVideoEl.playbackRate = effectiveRate;
             await seekMedia(outgoingVideoEl, expectedOutTime);
           } else {
-            if (Math.abs(outgoingVideoEl.currentTime - expectedOutTime) > 0.2) {
+            if (Math.abs(outgoingVideoEl.playbackRate - effectiveRate) > 0.02) {
+              outgoingVideoEl.playbackRate = effectiveRate;
+            }
+            const driftThreshold = hasSpeedRamps ? 0.12 : 0.2;
+            if (Math.abs(outgoingVideoEl.currentTime - expectedOutTime) > driftThreshold) {
               await seekMedia(outgoingVideoEl, expectedOutTime);
             }
             if (outgoingVideoEl.paused && !outgoingVideoEl.ended) {

@@ -10,10 +10,12 @@ import {
   Film,
   Layers,
   Music,
+  Redo2,
   Scissors,
   Snowflake,
   Trash2,
   Type as TypeIcon,
+  Undo2,
   X,
   ZoomIn,
   ZoomOut,
@@ -47,6 +49,10 @@ interface TimelinePanelProps {
   totalDuration: number;
   playbackSpeed: number;
   beatTimes?: number[];
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   onSelectItem: (item: SelectedTimelineItem) => void;
   onSeek: (time: number) => void;
   onSplitSelected: () => void;
@@ -179,6 +185,10 @@ export function TimelinePanel({
   totalDuration,
   playbackSpeed,
   beatTimes = [],
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   onSelectItem,
   onSeek,
   onSplitSelected,
@@ -199,8 +209,9 @@ export function TimelinePanel({
   const dragRef = useRef<DragOperation | null>(null);
 
   const videoSegments = useMemo(
-    () => computeVideoTimelineSegments(videoClips, playbackSpeed),
-    [videoClips, playbackSpeed]
+    () =>
+      computeVideoTimelineSegments(videoClips, playbackSpeed, effectItems),
+    [videoClips, playbackSpeed, effectItems]
   );
 
   const displaySeconds = Math.max(20, Math.ceil(totalDuration + 6));
@@ -477,6 +488,42 @@ export function TimelinePanel({
           >
             <Trash2 className="w-3 h-3" aria-hidden="true" />
             <span>Delete</span>
+          </button>
+
+          <div className="h-3.5 w-px bg-zinc-800 mx-0.5" aria-hidden="true" />
+
+          <button
+            type="button"
+            disabled={!canUndo}
+            onClick={onUndo}
+            title={canUndo ? 'Undo last edit (Ctrl+Z)' : 'Nothing to undo'}
+            aria-label="Undo"
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+              canUndo
+                ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100'
+                : 'border-zinc-800 bg-zinc-900/50 text-zinc-600 cursor-not-allowed'
+            }`}
+          >
+            <Undo2 className="w-3 h-3" aria-hidden="true" />
+            <span>Undo</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canRedo}
+            onClick={onRedo}
+            title={
+              canRedo ? 'Redo edit (Ctrl+Y / Ctrl+Shift+Z)' : 'Nothing to redo'
+            }
+            aria-label="Redo"
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+              canRedo
+                ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100'
+                : 'border-zinc-800 bg-zinc-900/50 text-zinc-600 cursor-not-allowed'
+            }`}
+          >
+            <Redo2 className="w-3 h-3" aria-hidden="true" />
+            <span>Redo</span>
           </button>
         </div>
 
@@ -851,7 +898,7 @@ export function TimelinePanel({
               >
                 {effectItems.length === 0 ? (
                   <span className="px-3 text-[10px] text-zinc-600 pointer-events-none">
-                    Click any Effect (Rain, Snow, Zoom, Shake, Glitch, Color) to add at playhead
+                    Click any Effect (Rain, Snow, Zoom, Halation, Neon, Golden Hour) to add at playhead
                   </span>
                 ) : (
                   effectItems.map((ef) => {
@@ -869,7 +916,7 @@ export function TimelinePanel({
                         ? isSelected
                           ? 'border-cyan-300 bg-cyan-500/35 ring-1 ring-cyan-300/80 text-cyan-50'
                           : 'border-cyan-400/70 bg-cyan-600/30 hover:border-cyan-300 text-cyan-100'
-                        : ef.category === 'party'
+                        : ef.category === 'studio'
                           ? isSelected
                             ? 'border-pink-300 bg-pink-500/35 ring-1 ring-pink-300/80 text-pink-50'
                             : 'border-pink-400/70 bg-pink-600/30 hover:border-pink-300 text-pink-100'
@@ -888,7 +935,7 @@ export function TimelinePanel({
                     const handleColor =
                       ef.category === 'motion'
                         ? 'bg-cyan-400/60 hover:bg-cyan-300'
-                        : ef.category === 'party'
+                        : ef.category === 'studio'
                           ? 'bg-pink-400/60 hover:bg-pink-300'
                           : ef.category === 'cinema'
                             ? 'bg-amber-400/60 hover:bg-amber-300'

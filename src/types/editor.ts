@@ -23,31 +23,31 @@ export type RightPanelTab =
 
 export type WeatherEffectType = 'rain' | 'snow' | 'smoke';
 
-export type PartyVfxType =
+export type MotionEffectType =
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'camera-shake'
+  | 'heartbeat-zoom'
+  | 'speed-ramp';
+
+export type StudioVfxType =
   | 'disco'
-  | 'rgb-split'
-  | 'vhs'
-  | 'cartoon'
-  | 'pencil-sketch'
-  | 'mirror'
-  | 'split-screen'
-  | 'double-exposure'
-  | 'heart-star-burst';
+  | 'halation'
+  | 'neon-edge'
+  | 'golden-hour'
+  | 'bokeh-particles'
+  | 'focus-pull';
 
 export type CinemaVfxType =
   | 'letterbox'
   | 'film-grain'
   | 'lens-flare'
   | 'light-leak'
-  | 'film-burn'
-  | 'motion-blur'
   | 'ai-portrait';
 
 export type TimelineEffectType =
   | WeatherEffectType
-  | 'zoom-in'
-  | 'zoom-out'
-  | 'camera-shake'
+  | MotionEffectType
   | 'glitch'
   | 'teal-orange'
   | 'cyberpunk'
@@ -57,15 +57,17 @@ export type TimelineEffectType =
   | 'vintage'
   | 'bw'
   | 'warm'
-  | PartyVfxType
+  | StudioVfxType
   | CinemaVfxType;
 
 export type TimelineEffectCategory =
   | 'weather'
   | 'motion'
   | 'filter'
-  | 'party'
+  | 'studio'
   | 'cinema';
+
+export type SpeedRampMode = 'slow-mo' | 'speed-up';
 
 export interface TimelineEffectItem {
   id: string;
@@ -74,13 +76,15 @@ export interface TimelineEffectItem {
   name: string;
   icon: string;
   intensity: number; // 0..1.0
-  opacity: number; // 0.1..1.0
+  opacity: number; // 0..1.0
   startTime: number;
   endTime: number;
   // Precision timed zoom keyframe controls (used by zoom-in / zoom-out)
   targetZoom?: number; // 110..300 (%)
   zoomCenterX?: number; // 0..100 (%)
   zoomCenterY?: number; // 0..100 (%)
+  // Speed Ramp / Slow-Mo pulse direction
+  speedRampMode?: SpeedRampMode;
 }
 
 export type StickerKind =

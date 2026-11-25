@@ -46,6 +46,7 @@ import type {
   OverlayAnimationPreset,
   OverlayLayerItem,
   RightPanelTab,
+  SpeedRampMode,
   StickerKind,
   TextOverlayItem,
   TimelineAudioClip,
@@ -177,16 +178,6 @@ const FILTER_PRESETS: Array<{id: FilterPreset; label: string}> = [
   {id: 'vintage', label: 'Vintage'},
   {id: 'bw', label: 'B&W'},
   {id: 'warm', label: 'Warm'},
-];
-
-const TIMED_MOTION_OPTIONS: Array<{
-  type: 'zoom-in' | 'zoom-out' | 'camera-shake';
-  label: string;
-  icon: string;
-}> = [
-  {type: 'zoom-in', label: 'Slow Zoom In', icon: '🔍'},
-  {type: 'zoom-out', label: 'Slow Zoom Out', icon: '🔎'},
-  {type: 'camera-shake', label: 'Camera Shake', icon: '📳'},
 ];
 
 const CHROMA_SWATCHES = [
@@ -772,7 +763,42 @@ export function RightEditorPanel({
               </div>
             )}
 
-            {/* Opacity Slider */}
+            {selectedEffect.type === 'speed-ramp' && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                <span className="block text-[11px] font-medium text-cyan-200">
+                  Speed Ramp Curve
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    {id: 'slow-mo', label: 'Slow-Mo Pulse'},
+                    {id: 'speed-up', label: 'Speed Boost'},
+                  ].map((modeOpt) => {
+                    const currentMode = selectedEffect.speedRampMode ?? 'slow-mo';
+                    const isModeActive = currentMode === modeOpt.id;
+                    return (
+                      <button
+                        key={modeOpt.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateEffectItem(selectedEffect.id, {
+                            speedRampMode: modeOpt.id as SpeedRampMode,
+                          })
+                        }
+                        className={`py-1.5 px-2 rounded-lg border text-[10px] font-medium transition-colors ${
+                          isModeActive
+                            ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                            : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        {modeOpt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Opacity Slider (0% - 100%) */}
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px]">
                 <label
@@ -788,7 +814,7 @@ export function RightEditorPanel({
               <input
                 id="selected-effect-opacity"
                 type="range"
-                min={0.1}
+                min={0}
                 max={1}
                 step={0.01}
                 value={selectedEffect.opacity}
@@ -851,51 +877,53 @@ export function RightEditorPanel({
               </div>
             </div>
 
-            {/* Animated Camera Motion — Instant 1-Click Timeline Insertion */}
+            {/* Animated Camera & Speed Motion — Instant 1-Click Timeline Insertion */}
             <div className="pt-3 border-t border-zinc-800/80 space-y-2">
               <div>
                 <h3 className="text-xs font-semibold text-zinc-100">
-                  Animated Camera Effects
+                  Camera &amp; Time Motion
                 </h3>
                 <p className="text-[10px] text-zinc-400">
-                  Adds timed Zoom or Shake block on Effects track
+                  Timed Zoom, Shake, Heartbeat &amp; Speed Ramp blocks
                 </p>
               </div>
 
               <div className="grid grid-cols-2 gap-1.5">
-                {TIMED_MOTION_OPTIONS.map((opt) => {
-                  const active = selectedEffect?.type === opt.type;
-                  return (
-                    <button
-                      key={opt.type}
-                      type="button"
-                      onClick={() => onAddTimelineEffect(opt.type)}
-                      className={`px-2 py-2 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors ${
-                        active
-                          ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
-                          : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-cyan-500/60 hover:bg-cyan-500/10'
-                      }`}
-                    >
-                      <span aria-hidden="true">{opt.icon}</span>
-                      <span>+ {opt.label}</span>
-                    </button>
-                  );
-                })}
+                {EFFECT_CATALOG.filter((e) => e.category === 'motion').map(
+                  (opt) => {
+                    const active = selectedEffect?.type === opt.type;
+                    return (
+                      <button
+                        key={opt.type}
+                        type="button"
+                        onClick={() => onAddTimelineEffect(opt.type)}
+                        className={`px-2 py-2 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors truncate ${
+                          active
+                            ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                            : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-cyan-500/60 hover:bg-cyan-500/10'
+                        }`}
+                      >
+                        <span aria-hidden="true">{opt.icon}</span>
+                        <span className="truncate">+ {opt.name}</span>
+                      </button>
+                    );
+                  }
+                )}
               </div>
             </div>
 
-            {/* Party & Creative VFX Suite */}
+            {/* Curated Studio VFX Suite */}
             <div className="pt-3 border-t border-zinc-800/80 space-y-2">
               <div>
                 <h3 className="text-xs font-semibold text-zinc-100">
-                  Party &amp; Creative VFX
+                  Curated Studio VFX
                 </h3>
                 <p className="text-[10px] text-zinc-400">
-                  One-click 4s block on Effects track with intensity control
+                  One-click 4s block on Effects track with 0–100% intensity &amp; opacity
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
-                {EFFECT_CATALOG.filter((e) => e.category === 'party').map(
+                {EFFECT_CATALOG.filter((e) => e.category === 'studio').map(
                   (ef) => {
                     const active = selectedEffect?.type === ef.type;
                     return (
