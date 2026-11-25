@@ -13,6 +13,7 @@ import {PreviewCanvasPlayer} from './components/PreviewCanvasPlayer';
 import {RightEditorPanel} from './components/RightEditorPanel';
 import {TimelinePanel} from './components/TimelinePanel';
 import {
+  DEFAULT_AUDIO_EFFECTS,
   DEFAULT_BG_REMOVAL,
   DEFAULT_MOTION_TRANSFORM,
   type AIStudioCaption,
@@ -20,6 +21,7 @@ import {
   type AudioAsset,
   type AudioSettings,
   type BackgroundRemovalConfig,
+  type BuiltInSfxKind,
   type ClipTransition,
   type FilterPreset,
   type MediaAsset,
@@ -27,15 +29,23 @@ import {
   type OverlayLayerItem,
   type RightPanelTab,
   type SelectedTimelineItem,
+  type StickerKind,
   type TextOverlayItem,
   type TimelineAudioClip,
+  type TimelineEffectItem,
   type TimelineVideoClip,
   type VideoFilters,
   type VideoFitMode,
+  type WeatherEffectType,
 } from './types/editor';
 import {clearMaskCache} from './utils/backgroundRemover';
 import {FILTER_PRESET_VALUES} from './utils/canvasRenderer';
 import {exportEditedVideo} from './utils/exportVideo';
+import {
+  BUILT_IN_SFX_LIST,
+  generateBuiltInSfxAsset,
+} from './utils/soundEffects';
+import {getStickerDefinition} from './utils/stickerRenderer';
 import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
@@ -94,6 +104,7 @@ const DEFAULT_FILTERS: VideoFilters = {
   hueRotate: 0,
   vignette: 0,
   sharpen: 0,
+  faceGlow: 0,
   preset: 'none',
 };
 
@@ -103,6 +114,7 @@ const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   musicVolume: 0.7,
   musicMuted: false,
   playbackSpeed: 1,
+  effects: {...DEFAULT_AUDIO_EFFECTS},
 };
 
 const DEFAULT_TRANSITION: ClipTransition = {
@@ -123,6 +135,7 @@ export default function App() {
 
   // Multi-Track Timeline State
   const [videoClips, setVideoClips] = useState<TimelineVideoClip[]>([]);
+  const [effectItems, setEffectItems] = useState<TimelineEffectItem[]>([]);
   const [overlayLayers, setOverlayLayers] = useState<OverlayLayerItem[]>([]);
   const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
   const [textOverlays, setTextOverlays] = useState<TextOverlayItem[]>([]);
@@ -191,10 +204,12 @@ export default function App() {
         overlayLayers,
         audioClips,
         textOverlays,
-        audioSettings.playbackSpeed
+        audioSettings.playbackSpeed,
+        effectItems
       ),
     [
       videoClips,
+      effectItems,
       overlayLayers,
       audioClips,
       textOverlays,
@@ -215,6 +230,20 @@ export default function App() {
     selectedItem?.track === 'overlay' ? selectedItem.id : null;
   const selectedTextId =
     selectedItem?.track === 'text' ? selectedItem.id : null;
+  const selectedEffect = useMemo(
+    () =>
+      selectedItem?.track === 'effect'
+        ? effectItems.find((e) => e.id === selectedItem.id) ?? null
+        : null,
+    [selectedItem, effectItems]
+  );
+  const selectedAudioClip = useMemo(
+    () =>
+      selectedItem?.track === 'audio'
+        ? audioClips.find((c) => c.id === selectedItem.id) ?? null
+        : null,
+    [selectedItem, audioClips]
+  );
 
   // Upload Videos & Images
   const handleUploadMediaFiles = useCallback(
@@ -638,6 +667,110 @@ export default function App() {
         startTime: currentTime,
         trimStart: 0,
         trimEnd: asset.duration,
+        volume: 1,
+      };
+      setAudioClips((prev) => [...prev, clip]);
+      setSelectedItem({track: 'audio', id: clip.id});
+    },
+    [currentTime]
+  );
+
+  // Weather & Atmospheric Effects Track
+  const handleAddWeatherEffect = useCallback(
+    (type: WeatherEffectType, intensity: number, opacity: number) => {
+      const start = Math.max(0, Number(currentTime.toFixed(2)));
+      const label =
+        type === 'rain' ? 'Rain' : type === 'snow' ? 'Snow' : 'Smoke / Fog';
+      const defaultEnd =
+        totalDuration > start + 0.5
+          ? Math.min(totalDuration, start + 5)
+          : start + 5;
+      const item: TimelineEffectItem = {
+        id: makeId('effect'),
+        type,
+        name: label,
+        intensity,
+        opacity,
+        startTime: start,
+        endTime: Math.max(start + 1, defaultEnd),
+      };
+      setEffectItems((prev) => [...prev, item]);
+      setSelectedItem({track: 'effect', id: item.id});
+    },
+    [currentTime, totalDuration]
+  );
+
+  const handleUpdateEffectItem = useCallback(
+    (id: string, patch: Partial<TimelineEffectItem>) => {
+      setEffectItems((prev) =>
+        prev.map((item) => (item.id === id ? {...item, ...patch} : item))
+      );
+    },
+    []
+  );
+
+  const handleDeleteEffectItem = useCallback(
+    (id: string) => {
+      setEffectItems((prev) => prev.filter((item) => item.id !== id));
+      if (selectedItem?.track === 'effect' && selectedItem.id === id) {
+        setSelectedItem(null);
+      }
+    },
+    [selectedItem]
+  );
+
+  // Stickers & Masks on Overlay Track
+  const handleAddStickerOverlay = useCallback(
+    (stickerKind: StickerKind) => {
+      const def = getStickerDefinition(stickerKind);
+      const start = Math.max(0, Number(currentTime.toFixed(2)));
+      const end =
+        totalDuration > start + 0.5
+          ? Math.min(totalDuration, start + 4)
+          : start + 4;
+      const newLayer: OverlayLayerItem = {
+        id: makeId('sticker'),
+        assetId: `sticker-${stickerKind}`,
+        kind: 'sticker',
+        stickerKind,
+        name: def.label,
+        url: def.dataUrl,
+        thumbnailUrl: def.dataUrl,
+        sourceDuration: 0,
+        sourceTrimStart: 0,
+        startTime: start,
+        endTime: Math.max(start + 0.5, end),
+        x: 0.5,
+        y: 0.42,
+        width: 0.26,
+        aspectRatio: def.aspectRatio,
+        opacity: 1,
+        bgRemoval: {...DEFAULT_BG_REMOVAL, replacementType: 'transparent'},
+      };
+      setOverlayLayers((prev) => [...prev, newLayer]);
+      setSelectedItem({track: 'overlay', id: newLayer.id});
+    },
+    [currentTime, totalDuration]
+  );
+
+  // Built-in Synthesized SFX Insertion at Playhead
+  const handleAddBuiltInSfx = useCallback(
+    async (kind: BuiltInSfxKind) => {
+      const def =
+        BUILT_IN_SFX_LIST.find((s) => s.kind === kind) ?? BUILT_IN_SFX_LIST[0];
+      const asset = await generateBuiltInSfxAsset(kind);
+      const start = Math.max(0, Number(currentTime.toFixed(2)));
+      const clip: TimelineAudioClip = {
+        id: makeId('sfx'),
+        assetId: `sfx-${kind}`,
+        name: `SFX · ${def.name}`,
+        url: asset.url,
+        sourceDuration: asset.duration,
+        startTime: start,
+        trimStart: 0,
+        trimEnd: asset.duration,
+        volume: 1,
+        isSfx: true,
       };
       setAudioClips((prev) => [...prev, clip]);
       setSelectedItem({track: 'audio', id: clip.id});
@@ -881,10 +1014,37 @@ export default function App() {
         return copy;
       });
       setSelectedItem({track: 'text', id: secondHalf.id});
+    } else if (selectedItem.track === 'effect') {
+      const ef = effectItems.find((e) => e.id === selectedItem.id);
+      if (!ef) return;
+      if (
+        currentTime <= ef.startTime + 0.15 ||
+        currentTime >= ef.endTime - 0.15
+      ) {
+        return;
+      }
+      const firstHalf: TimelineEffectItem = {
+        ...ef,
+        endTime: currentTime,
+      };
+      const secondHalf: TimelineEffectItem = {
+        ...ef,
+        id: makeId('effect'),
+        startTime: currentTime,
+      };
+      setEffectItems((prev) => {
+        const idx = prev.findIndex((e) => e.id === ef.id);
+        if (idx === -1) return prev;
+        const copy = [...prev];
+        copy.splice(idx, 1, firstHalf, secondHalf);
+        return copy;
+      });
+      setSelectedItem({track: 'effect', id: secondHalf.id});
     }
   }, [
     selectedItem,
     videoClips,
+    effectItems,
     overlayLayers,
     audioClips,
     textOverlays,
@@ -903,6 +1063,8 @@ export default function App() {
         }
         return filtered;
       });
+    } else if (selectedItem.track === 'effect') {
+      setEffectItems((prev) => prev.filter((e) => e.id !== selectedItem.id));
     } else if (selectedItem.track === 'overlay') {
       clearMaskCache(`overlay-${selectedItem.id}`);
       setOverlayLayers((prev) => prev.filter((o) => o.id !== selectedItem.id));
@@ -942,7 +1104,11 @@ export default function App() {
 
   const handleApplyFilterPreset = useCallback((preset: FilterPreset) => {
     const presetValues = FILTER_PRESET_VALUES[preset];
-    setFilters({preset, ...presetValues});
+    setFilters((prev) => ({
+      preset,
+      ...presetValues,
+      faceGlow: prev.faceGlow,
+    }));
   }, []);
 
   const handleResetFilters = useCallback(() => {
@@ -999,6 +1165,7 @@ export default function App() {
     try {
       const result = await exportEditedVideo({
         videoClips,
+        effectItems,
         overlayLayers,
         audioClips,
         textOverlays,
@@ -1043,6 +1210,7 @@ export default function App() {
     }
   }, [
     videoClips,
+    effectItems,
     overlayLayers,
     audioClips,
     textOverlays,
@@ -1100,6 +1268,7 @@ export default function App() {
 
         <PreviewCanvasPlayer
           videoClips={videoClips}
+          effectItems={effectItems}
           overlayLayers={overlayLayers}
           audioClips={audioClips}
           textOverlays={textOverlays}
@@ -1140,6 +1309,11 @@ export default function App() {
             motionTransform={motionTransform}
             onUpdateMotionTransform={handleUpdateMotionTransform}
             onResetMotionTransform={handleResetMotionTransform}
+            effectItems={effectItems}
+            selectedEffect={selectedEffect}
+            onAddWeatherEffect={handleAddWeatherEffect}
+            onUpdateEffectItem={handleUpdateEffectItem}
+            onDeleteEffectItem={handleDeleteEffectItem}
             filters={filters}
             onUpdateFilters={handleUpdateFilters}
             onApplyFilterPreset={handleApplyFilterPreset}
@@ -1152,6 +1326,9 @@ export default function App() {
             onUpdateMainBgRemoval={handleUpdateMainBgRemoval}
             onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
             onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
+            onAddStickerOverlay={handleAddStickerOverlay}
+            onSelectOverlay={handleSelectOverlay}
+            onDeleteOverlay={handleDeleteOverlay}
             textOverlays={textOverlays}
             selectedTextId={selectedTextId}
             totalDuration={totalDuration}
@@ -1162,8 +1339,13 @@ export default function App() {
             onDeleteTextOverlay={handleDeleteTextOverlay}
             audioAssets={audioAssets}
             audioSettings={audioSettings}
+            selectedAudioClip={selectedAudioClip}
             onUploadAudioFiles={handleUploadAudioFiles}
             onAddAudioToTimeline={handleAddAudioToTimeline}
+            onUpdateAudioClip={handleUpdateAudioClip}
+            onAddBuiltInSfx={(kind) => {
+              void handleAddBuiltInSfx(kind);
+            }}
             onUpdateAudioSettings={(patch) =>
               setAudioSettings((prev) => ({...prev, ...patch}))
             }
@@ -1179,6 +1361,7 @@ export default function App() {
       {!isFullPreview && (
         <TimelinePanel
           videoClips={videoClips}
+          effectItems={effectItems}
           overlayLayers={overlayLayers}
           audioClips={audioClips}
           textOverlays={textOverlays}
@@ -1189,7 +1372,10 @@ export default function App() {
           onSelectItem={(item) => {
             setSelectedItem(item);
             if (item?.track === 'overlay') {
-              setBgTargetKey(item.id);
+              const target = overlayLayers.find((o) => o.id === item.id);
+              if (target && target.kind !== 'sticker') {
+                setBgTargetKey(item.id);
+              }
             } else if (item?.track === 'video') {
               setBgTargetKey('main');
             }
@@ -1203,6 +1389,7 @@ export default function App() {
           onDeleteSelected={handleDeleteSelected}
           onTrimVideoClip={handleTrimVideoClip}
           onUpdateClipTransition={handleUpdateClipTransition}
+          onUpdateEffectItem={handleUpdateEffectItem}
           onUpdateOverlay={handleUpdateOverlay}
           onUpdateAudioClip={handleUpdateAudioClip}
           onUpdateTextOverlay={handleUpdateTextOverlay}

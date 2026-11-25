@@ -3,6 +3,7 @@ import type {
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
+  TimelineEffectItem,
   TimelineVideoClip,
 } from '../types/editor';
 
@@ -80,13 +81,19 @@ export function computeTotalTimelineDuration(
   overlayLayers: OverlayLayerItem[],
   audioClips: TimelineAudioClip[],
   textOverlays: TextOverlayItem[],
-  playbackSpeed: number
+  playbackSpeed: number,
+  effectItems: TimelineEffectItem[] = []
 ): number {
   const videoSegments = computeVideoTimelineSegments(videoClips, playbackSpeed);
   const videoEnd =
     videoSegments.length > 0
       ? videoSegments[videoSegments.length - 1].timelineEnd
       : 0;
+
+  const effectEnd = effectItems.reduce(
+    (max, item) => Math.max(max, item.endTime),
+    0
+  );
 
   const overlayEnd = overlayLayers.reduce(
     (max, layer) => Math.max(max, layer.endTime),
@@ -103,7 +110,7 @@ export function computeTotalTimelineDuration(
     0
   );
 
-  return Math.max(videoEnd, overlayEnd, audioEnd, textEnd);
+  return Math.max(videoEnd, effectEnd, overlayEnd, audioEnd, textEnd);
 }
 
 export function resolveVideoStateAtTime(

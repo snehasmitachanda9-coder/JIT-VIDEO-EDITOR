@@ -6,6 +6,7 @@ import {
 } from 'react';
 import {
   ArrowLeftRight,
+  CloudRain,
   Film,
   Layers,
   Music,
@@ -23,6 +24,7 @@ import type {
   SelectedTimelineItem,
   TextOverlayItem,
   TimelineAudioClip,
+  TimelineEffectItem,
   TimelineVideoClip,
   TransitionType,
 } from '../types/editor';
@@ -35,6 +37,7 @@ import {
 
 interface TimelinePanelProps {
   videoClips: TimelineVideoClip[];
+  effectItems: TimelineEffectItem[];
   overlayLayers: OverlayLayerItem[];
   audioClips: TimelineAudioClip[];
   textOverlays: TextOverlayItem[];
@@ -49,6 +52,7 @@ interface TimelinePanelProps {
   onDeleteSelected: () => void;
   onTrimVideoClip: (id: string, trimStart: number, trimEnd: number) => void;
   onUpdateClipTransition: (clipId: string, transition: ClipTransition) => void;
+  onUpdateEffectItem: (id: string, patch: Partial<TimelineEffectItem>) => void;
   onUpdateOverlay: (id: string, patch: Partial<OverlayLayerItem>) => void;
   onUpdateAudioClip: (id: string, patch: Partial<TimelineAudioClip>) => void;
   onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
@@ -81,6 +85,27 @@ type DragOperation =
       clipKind: 'video' | 'freeze';
     }
   | {
+      kind: 'effect-move';
+      id: string;
+      initialX: number;
+      origStartTime: number;
+      origEndTime: number;
+    }
+  | {
+      kind: 'effect-trim-left';
+      id: string;
+      initialX: number;
+      origStartTime: number;
+      origEndTime: number;
+    }
+  | {
+      kind: 'effect-trim-right';
+      id: string;
+      initialX: number;
+      origStartTime: number;
+      origEndTime: number;
+    }
+  | {
       kind: 'overlay-move';
       id: string;
       initialX: number;
@@ -94,7 +119,7 @@ type DragOperation =
       origStartTime: number;
       origEndTime: number;
       origSourceTrimStart: number;
-      layerKind: 'image' | 'video';
+      layerKind: 'image' | 'video' | 'sticker';
     }
   | {
       kind: 'overlay-trim-right';
@@ -150,6 +175,7 @@ type DragOperation =
 
 export function TimelinePanel({
   videoClips,
+  effectItems,
   overlayLayers,
   audioClips,
   textOverlays,
@@ -164,6 +190,7 @@ export function TimelinePanel({
   onDeleteSelected,
   onTrimVideoClip,
   onUpdateClipTransition,
+  onUpdateEffectItem,
   onUpdateOverlay,
   onUpdateAudioClip,
   onUpdateTextOverlay,
@@ -198,6 +225,11 @@ export function TimelinePanel({
         currentTime < seg.timelineEnd - 0.15
       );
     }
+    if (selectedItem.track === 'effect') {
+      const ef = effectItems.find((e) => e.id === selectedItem.id);
+      if (!ef) return false;
+      return currentTime > ef.startTime + 0.15 && currentTime < ef.endTime - 0.15;
+    }
     if (selectedItem.track === 'overlay') {
       const ov = overlayLayers.find((o) => o.id === selectedItem.id);
       if (!ov) return false;
@@ -218,6 +250,7 @@ export function TimelinePanel({
   }, [
     selectedItem,
     videoSegments,
+    effectItems,
     overlayLayers,
     audioClips,
     textOverlays,
@@ -273,6 +306,25 @@ export function TimelinePanel({
         Math.max(op.origTrimStart + 0.25, op.origTrimEnd + sourceDelta)
       );
       onTrimVideoClip(op.id, op.origTrimStart, nextEnd);
+    } else if (op.kind === 'effect-move') {
+      const dur = op.origEndTime - op.origStartTime;
+      const nextStart = Math.max(0, op.origStartTime + deltaSec);
+      onUpdateEffectItem(op.id, {
+        startTime: nextStart,
+        endTime: nextStart + dur,
+      });
+    } else if (op.kind === 'effect-trim-left') {
+      const nextStart = Math.max(
+        0,
+        Math.min(op.origEndTime - 0.25, op.origStartTime + deltaSec)
+      );
+      onUpdateEffectItem(op.id, {startTime: nextStart});
+    } else if (op.kind === 'effect-trim-right') {
+      const nextEnd = Math.max(
+        op.origStartTime + 0.25,
+        op.origEndTime + deltaSec
+      );
+      onUpdateEffectItem(op.id, {endTime: nextEnd});
     } else if (op.kind === 'overlay-move') {
       const dur = op.origEndTime - op.origStartTime;
       const nextStart = Math.max(0, op.origStartTime + deltaSec);
@@ -365,7 +417,7 @@ export function TimelinePanel({
   return (
     <section
       aria-label="Multi-Track Timeline"
-      className="h-44 sm:h-48 shrink-0 border-t border-zinc-800/80 bg-[#12151B] flex flex-col select-none relative"
+      className="h-52 sm:h-56 shrink-0 border-t border-zinc-800/80 bg-[#12151B] flex flex-col select-none relative"
     >
       {/* Compact Timeline Toolbar */}
       <div className="h-8 shrink-0 border-b border-zinc-800/80 px-3 flex items-center justify-between gap-2 bg-[#101319]">
@@ -525,17 +577,21 @@ export function TimelinePanel({
         </div>
       </div>
 
-      {/* Scrollable 4-Track Area */}
+      {/* Scrollable 5-Track Area */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Sticky Left Track Labels */}
         <div className="w-24 shrink-0 border-r border-zinc-800/80 bg-[#0F1217] flex flex-col">
           <div className="h-5 border-b border-zinc-800/80 px-2.5 flex items-center text-[10px] font-mono text-zinc-500">
             Time
           </div>
-          <div className="flex-1 grid grid-rows-4">
+          <div className="flex-1 grid grid-rows-5">
             <div className="border-b border-zinc-800/60 px-2.5 flex items-center gap-1.5 text-[11px] font-medium text-zinc-300">
               <Film className="w-3 h-3 text-blue-400 shrink-0" aria-hidden="true" />
               <span className="truncate">Video</span>
+            </div>
+            <div className="border-b border-zinc-800/60 px-2.5 flex items-center gap-1.5 text-[11px] font-medium text-zinc-300">
+              <CloudRain className="w-3 h-3 text-violet-400 shrink-0" aria-hidden="true" />
+              <span className="truncate">Effects</span>
             </div>
             <div className="border-b border-zinc-800/60 px-2.5 flex items-center gap-1.5 text-[11px] font-medium text-zinc-300">
               <Layers className="w-3 h-3 text-sky-400 shrink-0" aria-hidden="true" />
@@ -582,9 +638,9 @@ export function TimelinePanel({
               ))}
             </div>
 
-            {/* 4 Tracks Grid */}
+            {/* 5 Tracks Grid */}
             <div
-              className="flex-1 grid grid-rows-4 relative"
+              className="flex-1 grid grid-rows-5 relative"
               onPointerDown={(e) => {
                 if (e.target === e.currentTarget) {
                   onSelectItem(null);
@@ -752,7 +808,114 @@ export function TimelinePanel({
                 )}
               </div>
 
-              {/* Track 2: Overlay / PIP */}
+              {/* Track 2: Weather / Atmospheric Effects */}
+              <div
+                className="border-b border-zinc-800/60 relative flex items-center"
+                onPointerDown={(e) => {
+                  if (e.target === e.currentTarget) {
+                    onSelectItem(null);
+                    onSeek(timeFromClientX(e.clientX));
+                  }
+                }}
+              >
+                {effectItems.length === 0 ? (
+                  <span className="px-3 text-[10px] text-zinc-600 pointer-events-none">
+                    Apply Rain, Snow, or Smoke from Effects tab
+                  </span>
+                ) : (
+                  effectItems.map((ef) => {
+                    const dur = Math.max(0.25, ef.endTime - ef.startTime);
+                    const leftPx = ef.startTime * pxPerSecond;
+                    const widthPx = Math.max(24, dur * pxPerSecond);
+                    const isSelected =
+                      selectedItem?.track === 'effect' &&
+                      selectedItem.id === ef.id;
+
+                    return (
+                      <div
+                        key={ef.id}
+                        style={{left: leftPx, width: widthPx}}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          onSelectItem({track: 'effect', id: ef.id});
+                          dragRef.current = {
+                            kind: 'effect-move',
+                            id: ef.id,
+                            initialX: e.clientX,
+                            origStartTime: ef.startTime,
+                            origEndTime: ef.endTime,
+                          };
+                          (
+                            e.currentTarget.closest(
+                              '.overflow-x-auto'
+                            ) as HTMLElement | null
+                          )?.setPointerCapture(e.pointerId);
+                        }}
+                        className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center cursor-grab active:cursor-grabbing transition-colors ${
+                          isSelected
+                            ? 'border-violet-400 bg-violet-500/25 ring-1 ring-violet-400/60'
+                            : 'border-violet-500/40 bg-violet-950/35 hover:border-violet-400/70'
+                        }`}
+                      >
+                        <div
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            onSelectItem({track: 'effect', id: ef.id});
+                            dragRef.current = {
+                              kind: 'effect-trim-left',
+                              id: ef.id,
+                              initialX: e.clientX,
+                              origStartTime: ef.startTime,
+                              origEndTime: ef.endTime,
+                            };
+                            (
+                              e.currentTarget.closest(
+                                '.overflow-x-auto'
+                              ) as HTMLElement | null
+                            )?.setPointerCapture(e.pointerId);
+                          }}
+                          className="w-2 h-full shrink-0 bg-violet-500/40 hover:bg-violet-400 cursor-ew-resize flex items-center justify-center"
+                        >
+                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                        </div>
+
+                        <div className="flex-1 min-w-0 px-1.5 flex items-center justify-between gap-1.5">
+                          <span className="text-[10px] font-medium text-violet-100 truncate">
+                            {ef.name}
+                          </span>
+                          <span className="text-[9px] font-mono tabular-nums text-violet-200/80 shrink-0">
+                            {dur.toFixed(1)}s
+                          </span>
+                        </div>
+
+                        <div
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            onSelectItem({track: 'effect', id: ef.id});
+                            dragRef.current = {
+                              kind: 'effect-trim-right',
+                              id: ef.id,
+                              initialX: e.clientX,
+                              origStartTime: ef.startTime,
+                              origEndTime: ef.endTime,
+                            };
+                            (
+                              e.currentTarget.closest(
+                                '.overflow-x-auto'
+                              ) as HTMLElement | null
+                            )?.setPointerCapture(e.pointerId);
+                          }}
+                          className="w-2 h-full shrink-0 bg-violet-500/40 hover:bg-violet-400 cursor-ew-resize flex items-center justify-center"
+                        >
+                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Track 3: Overlay / PIP & Stickers */}
               <div
                 className="border-b border-zinc-800/60 relative flex items-center"
                 onPointerDown={(e) => {

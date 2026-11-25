@@ -6,6 +6,7 @@ import type {
   MotionTransform,
   OverlayLayerItem,
   TextOverlayItem,
+  TimelineEffectItem,
   VideoFilters,
   VideoFitMode,
 } from '../types/editor';
@@ -14,6 +15,7 @@ import {
   applyMaskToCanvas,
   getCachedMaskOrSchedule,
 } from './backgroundRemover';
+import {getStickerImageElement} from './stickerRenderer';
 
 export const ASPECT_RATIO_DIMENSIONS: Record<
   AspectRatioPreset,
@@ -36,6 +38,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 0,
     vignette: 0,
     sharpen: 0,
+    faceGlow: 0,
   },
   bw: {
     brightness: 104,
@@ -45,6 +48,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 0,
     vignette: 10,
     sharpen: 10,
+    faceGlow: 0,
   },
   vintage: {
     brightness: 105,
@@ -54,6 +58,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: -8,
     vignette: 35,
     sharpen: 0,
+    faceGlow: 0,
   },
   warm: {
     brightness: 106,
@@ -63,6 +68,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: -6,
     vignette: 12,
     sharpen: 0,
+    faceGlow: 0,
   },
   cinematic: {
     brightness: 95,
@@ -72,6 +78,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 0,
     vignette: 32,
     sharpen: 15,
+    faceGlow: 0,
   },
   'teal-orange': {
     brightness: 98,
@@ -81,6 +88,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: -4,
     vignette: 26,
     sharpen: 15,
+    faceGlow: 0,
   },
   cyberpunk: {
     brightness: 102,
@@ -90,6 +98,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 14,
     vignette: 30,
     sharpen: 20,
+    faceGlow: 0,
   },
   noir: {
     brightness: 92,
@@ -99,6 +108,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 0,
     vignette: 55,
     sharpen: 25,
+    faceGlow: 0,
   },
   'warm-sunset': {
     brightness: 108,
@@ -108,6 +118,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: -12,
     vignette: 22,
     sharpen: 0,
+    faceGlow: 0,
   },
   glitch: {
     brightness: 104,
@@ -117,6 +128,7 @@ export const FILTER_PRESET_VALUES: Record<
     hueRotate: 0,
     vignette: 18,
     sharpen: 20,
+    faceGlow: 0,
   },
 };
 
@@ -546,6 +558,209 @@ function drawColorGradingAndVignette(
   }
 }
 
+function drawFaceGlowBeautyPass(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  faceGlow: number
+) {
+  if (faceGlow <= 0) return;
+  const amount = Math.min(1, Math.max(0, faceGlow / 100));
+  const glowCanvas = getScratchCanvas('face-glow-pass');
+  const scale = 0.35;
+  const gw = Math.max(32, Math.round(canvasWidth * scale));
+  const gh = Math.max(32, Math.round(canvasHeight * scale));
+  if (glowCanvas.width !== gw || glowCanvas.height !== gh) {
+    glowCanvas.width = gw;
+    glowCanvas.height = gh;
+  }
+
+  const gctx = glowCanvas.getContext('2d');
+  if (!gctx) return;
+  gctx.clearRect(0, 0, gw, gh);
+  gctx.save();
+  gctx.filter = `blur(${(3 + amount * 6).toFixed(1)}px) brightness(${108 + Math.round(amount * 18)}%) saturate(${100 + Math.round(amount * 12)}%)`;
+  gctx.drawImage(ctx.canvas, 0, 0, gw, gh);
+  gctx.restore();
+
+  // Beauty soften via soft-light + luminous screen radiance
+  ctx.save();
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.globalAlpha = 0.24 + amount * 0.42;
+  ctx.drawImage(glowCanvas, 0, 0, canvasWidth, canvasHeight);
+
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = amount * 0.22;
+  ctx.drawImage(glowCanvas, 0, 0, canvasWidth, canvasHeight);
+
+  // Subtle warm center portrait glow
+  const cx = canvasWidth / 2;
+  const cy = canvasHeight * 0.46;
+  const r = Math.hypot(canvasWidth, canvasHeight) * 0.48;
+  const rad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  rad.addColorStop(0, `rgba(255, 242, 232, ${(amount * 0.14).toFixed(3)})`);
+  rad.addColorStop(1, 'rgba(255, 242, 232, 0)');
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = rad;
+  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  ctx.restore();
+}
+
+function hashSeed(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) || 1;
+}
+
+function seededRand(seed: number): number {
+  const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function drawWeatherEffects(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  effectItems: TimelineEffectItem[],
+  currentTime: number
+) {
+  const scaleFactor = Math.min(canvasWidth, canvasHeight) / 720;
+
+  for (const ef of effectItems) {
+    if (currentTime < ef.startTime || currentTime > ef.endTime) {
+      continue;
+    }
+
+    const intensity = Math.max(0.2, Math.min(1, ef.intensity));
+    const opacity = Math.max(0.05, Math.min(1, ef.opacity));
+    const localTime = Math.max(0, currentTime - ef.startTime);
+    const baseSeed = hashSeed(ef.id);
+
+    ctx.save();
+
+    if (ef.type === 'rain') {
+      const count = Math.round(55 + intensity * 165);
+      ctx.lineCap = 'round';
+
+      // Slight cool overcast atmosphere wash
+      ctx.fillStyle = `rgba(148, 182, 224, ${(0.06 * opacity * intensity).toFixed(3)})`;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      for (let i = 0; i < count; i++) {
+        const r1 = seededRand(baseSeed + i * 7 + 1);
+        const r2 = seededRand(baseSeed + i * 7 + 2);
+        const r3 = seededRand(baseSeed + i * 7 + 3);
+        const r4 = seededRand(baseSeed + i * 7 + 4);
+
+        const speedY = (820 + r3 * 680) * scaleFactor * (0.75 + intensity * 0.5);
+        const slant = -0.22; // Wind tilt
+        const ySpan = canvasHeight + 120 * scaleFactor;
+        const y = ((r2 * ySpan + localTime * speedY) % ySpan) - 60 * scaleFactor;
+        const x =
+          ((r1 * canvasWidth + y * slant + canvasWidth * 2) % canvasWidth);
+
+        const streakLen = (26 + r4 * 36) * scaleFactor * (0.7 + intensity * 0.45);
+        const alpha = (0.28 + r3 * 0.48) * opacity;
+
+        ctx.strokeStyle = `rgba(210, 232, 255, ${alpha.toFixed(3)})`;
+        ctx.lineWidth = (1.1 + r4 * 1.1) * scaleFactor;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + streakLen * slant, y + streakLen);
+        ctx.stroke();
+
+        // Occasional bottom splash ripple
+        if (i % 5 === 0 && y > canvasHeight * 0.86) {
+          const splashProgress = (y - canvasHeight * 0.86) / (canvasHeight * 0.14);
+          const radius = (4 + splashProgress * 12) * scaleFactor;
+          ctx.strokeStyle = `rgba(215, 236, 255, ${(alpha * (1 - splashProgress) * 0.65).toFixed(3)})`;
+          ctx.lineWidth = Math.max(1, 1.1 * scaleFactor);
+          ctx.beginPath();
+          ctx.ellipse(x, canvasHeight * (0.9 + r1 * 0.08), radius, radius * 0.35, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    } else if (ef.type === 'snow') {
+      const count = Math.round(40 + intensity * 125);
+      for (let i = 0; i < count; i++) {
+        const r1 = seededRand(baseSeed + i * 11 + 1);
+        const r2 = seededRand(baseSeed + i * 11 + 2);
+        const r3 = seededRand(baseSeed + i * 11 + 3);
+        const r4 = seededRand(baseSeed + i * 11 + 4);
+
+        const depth = 0.4 + r3 * 0.6;
+        const speedY = (55 + depth * 125) * scaleFactor * (0.65 + intensity * 0.55);
+        const swayAmp = (14 + r4 * 26) * scaleFactor;
+        const swayFreq = 0.8 + r2 * 1.4;
+        const ySpan = canvasHeight + 60 * scaleFactor;
+        const y = ((r2 * ySpan + localTime * speedY) % ySpan) - 30 * scaleFactor;
+        const x =
+          (r1 * canvasWidth +
+            Math.sin(localTime * swayFreq + r4 * Math.PI * 2) * swayAmp +
+            localTime * 18 * scaleFactor +
+            canvasWidth * 2) %
+          canvasWidth;
+
+        const radius = (2.2 + depth * 4.8) * scaleFactor;
+        const alpha = (0.35 + depth * 0.55) * opacity;
+
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.6);
+        grad.addColorStop(0, `rgba(255, 255, 255, ${alpha.toFixed(3)})`);
+        grad.addColorStop(0.55, `rgba(235, 245, 255, ${(alpha * 0.55).toFixed(3)})`);
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (ef.type === 'smoke') {
+      const count = Math.round(12 + intensity * 18);
+      // Soft atmospheric haze layer
+      ctx.fillStyle = `rgba(205, 214, 224, ${(0.08 * opacity * intensity).toFixed(3)})`;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      for (let i = 0; i < count; i++) {
+        const r1 = seededRand(baseSeed + i * 13 + 1);
+        const r2 = seededRand(baseSeed + i * 13 + 2);
+        const r3 = seededRand(baseSeed + i * 13 + 3);
+        const r4 = seededRand(baseSeed + i * 13 + 4);
+
+        const puffRadius = (130 + r3 * 210) * scaleFactor * (0.8 + intensity * 0.35);
+        const driftX = (22 + r4 * 34) * scaleFactor;
+        const driftY = (-10 - r2 * 18) * scaleFactor;
+        const spanW = canvasWidth + puffRadius * 2;
+        const spanH = canvasHeight + puffRadius * 2;
+
+        const x =
+          ((r1 * spanW + localTime * driftX + Math.sin(localTime * 0.4 + i) * 28) %
+            spanW) -
+          puffRadius;
+        const y =
+          (((r2 * spanH + localTime * driftY) % spanH) + spanH) % spanH -
+          puffRadius;
+
+        const breath = 0.72 + 0.28 * Math.sin(localTime * 0.9 + r4 * 6.28);
+        const alpha = (0.12 + r3 * 0.16) * opacity * intensity * breath;
+
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, puffRadius);
+        grad.addColorStop(0, `rgba(226, 232, 240, ${alpha.toFixed(3)})`);
+        grad.addColorStop(0.5, `rgba(203, 213, 225, ${(alpha * 0.55).toFixed(3)})`);
+        grad.addColorStop(1, 'rgba(203, 213, 225, 0)');
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, puffRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+}
+
 export function renderEditorFrame(params: {
   ctx: CanvasRenderingContext2D;
   canvasWidth: number;
@@ -562,6 +777,7 @@ export function renderEditorFrame(params: {
   mainBgRemoval: BackgroundRemovalConfig;
   mainBgReplacementEl?: MediaSourceElement | null;
   precomputedMainMask?: HTMLCanvasElement | null;
+  effectItems?: TimelineEffectItem[];
   overlayLayers: OverlayLayerItem[];
   overlayElementsMap: Map<string, MediaSourceElement>;
   precomputedOverlayMasks?: Map<string, HTMLCanvasElement | null>;
@@ -589,6 +805,7 @@ export function renderEditorFrame(params: {
     mainBgRemoval,
     mainBgReplacementEl = null,
     precomputedMainMask,
+    effectItems = [],
     overlayLayers,
     overlayElementsMap,
     precomputedOverlayMasks,
@@ -801,9 +1018,17 @@ export function renderEditorFrame(params: {
     }
 
     drawColorGradingAndVignette(ctx, canvasWidth, canvasHeight, filters);
+    if (filters.faceGlow > 0) {
+      drawFaceGlowBeautyPass(ctx, canvasWidth, canvasHeight, filters.faceGlow);
+    }
   }
 
-  // 3. Overlay / PIP Layers
+  // 2.5 Weather & Atmospheric Particle Effects Track
+  if (effectItems.length > 0) {
+    drawWeatherEffects(ctx, canvasWidth, canvasHeight, effectItems, currentTime);
+  }
+
+  // 3. Overlay / PIP & Stickers Layers
   const overlayBounds: OverlayLayerBounds[] = [];
   const scaleFactor = Math.min(canvasWidth, canvasHeight) / 720;
 
@@ -811,7 +1036,10 @@ export function renderEditorFrame(params: {
     if (currentTime < overlay.startTime || currentTime > overlay.endTime) {
       continue;
     }
-    const mediaEl = overlayElementsMap.get(overlay.id);
+    const mediaEl =
+      overlay.kind === 'sticker' && overlay.stickerKind
+        ? getStickerImageElement(overlay.stickerKind, onMaskUpdated)
+        : overlayElementsMap.get(overlay.id);
     if (!isMediaReady(mediaEl) || !mediaEl) {
       continue;
     }

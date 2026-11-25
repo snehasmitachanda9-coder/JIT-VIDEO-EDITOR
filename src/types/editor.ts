@@ -16,9 +16,35 @@ export type RightPanelTab =
   | 'motion'
   | 'filters'
   | 'bg-remove'
+  | 'stickers'
   | 'text'
   | 'audio'
   | 'ai';
+
+export type WeatherEffectType = 'rain' | 'snow' | 'smoke';
+
+export interface TimelineEffectItem {
+  id: string;
+  type: WeatherEffectType;
+  name: string;
+  intensity: number; // 0.2..1.0
+  opacity: number; // 0.1..1.0
+  startTime: number;
+  endTime: number;
+}
+
+export type StickerKind =
+  | 'sunglasses'
+  | 'crown'
+  | 'fire'
+  | 'heart'
+  | 'laugh'
+  | 'thumbs-up'
+  | 'star'
+  | 'party-hat'
+  | 'speech-bubble';
+
+export type BuiltInSfxKind = 'whoosh' | 'pop' | 'clap' | 'laugh';
 
 export type MotionPreset =
   | 'none'
@@ -128,7 +154,8 @@ export interface TimelineVideoClip {
 export interface OverlayLayerItem {
   id: string;
   assetId: string;
-  kind: 'image' | 'video';
+  kind: 'image' | 'video' | 'sticker';
+  stickerKind?: StickerKind;
   name: string;
   url: string;
   thumbnailUrl: string | null;
@@ -153,6 +180,8 @@ export interface TimelineAudioClip {
   startTime: number;
   trimStart: number;
   trimEnd: number;
+  volume?: number; // 0..1.5 (defaults to 1)
+  isSfx?: boolean;
 }
 
 export interface TextOverlayItem {
@@ -177,8 +206,25 @@ export interface VideoFilters {
   hueRotate: number; // -180..180 deg
   vignette: number; // 0..100 %
   sharpen: number; // 0..100 %
+  faceGlow: number; // 0..100 % Face Glow / Beauty Smooth
   preset: FilterPreset;
 }
+
+export interface AudioEffectsConfig {
+  echoEnabled: boolean;
+  echoAmount: number; // 0..100 %
+  reverbEnabled: boolean;
+  reverbAmount: number; // 0..100 %
+  target: 'both' | 'video' | 'music';
+}
+
+export const DEFAULT_AUDIO_EFFECTS: AudioEffectsConfig = {
+  echoEnabled: false,
+  echoAmount: 45,
+  reverbEnabled: false,
+  reverbAmount: 50,
+  target: 'both',
+};
 
 export interface AudioSettings {
   videoVolume: number; // 0..1
@@ -186,10 +232,12 @@ export interface AudioSettings {
   musicVolume: number; // 0..1
   musicMuted: boolean;
   playbackSpeed: number; // 0.5..2.0
+  effects: AudioEffectsConfig;
 }
 
 export type SelectedTimelineItem =
   | {track: 'video'; id: string}
+  | {track: 'effect'; id: string}
   | {track: 'overlay'; id: string}
   | {track: 'audio'; id: string}
   | {track: 'text'; id: string}

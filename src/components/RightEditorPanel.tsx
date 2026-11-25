@@ -1,6 +1,8 @@
 import {useRef, useState, type ChangeEvent} from 'react';
 import {
   Check,
+  CloudRain,
+  CloudSnow,
   Copy,
   Eraser,
   Film,
@@ -10,46 +12,66 @@ import {
   Music,
   PanelRightClose,
   PanelRightOpen,
+  Play,
   Plus,
   RotateCcw,
   Sliders,
+  Smile,
   Sparkles,
   Trash2,
   Type as TypeIcon,
   Upload,
   Volume2,
   VolumeX,
+  Wind,
 } from 'lucide-react';
 import type {
   AIStudioCaption,
   AIStudioResult,
   AspectRatioPreset,
   AudioAsset,
+  AudioEffectsConfig,
   AudioSettings,
   BackgroundRemovalConfig,
   BackgroundRemovalMode,
   BackgroundReplacementType,
+  BuiltInSfxKind,
   FilterPreset,
   MediaAsset,
   MotionPreset,
   MotionTransform,
   OverlayLayerItem,
   RightPanelTab,
+  StickerKind,
   TextOverlayItem,
+  TimelineAudioClip,
+  TimelineEffectItem,
   VideoFilters,
+  WeatherEffectType,
 } from '../types/editor';
 import {warmUpSelfieSegmentation} from '../utils/backgroundRemover';
 import {formatFileSize, formatTime} from '../utils/formatTime';
+import {BUILT_IN_SFX_LIST, playSfxPreview} from '../utils/soundEffects';
+import {STICKER_CATALOG} from '../utils/stickerRenderer';
 
 interface RightEditorPanelProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
-  // Motion & Transform tab
+  // Motion & Transform + Weather Effects tab
   motionTransform: MotionTransform;
   onUpdateMotionTransform: (patch: Partial<MotionTransform>) => void;
   onResetMotionTransform: () => void;
+  effectItems: TimelineEffectItem[];
+  selectedEffect: TimelineEffectItem | null;
+  onAddWeatherEffect: (
+    type: WeatherEffectType,
+    intensity: number,
+    opacity: number
+  ) => void;
+  onUpdateEffectItem: (id: string, patch: Partial<TimelineEffectItem>) => void;
+  onDeleteEffectItem: (id: string) => void;
   // Filters & Color tab
   filters: VideoFilters;
   onUpdateFilters: (patch: Partial<VideoFilters>) => void;
@@ -67,6 +89,10 @@ interface RightEditorPanelProps {
     patch: Partial<BackgroundRemovalConfig>
   ) => void;
   onUploadBackgroundReplacement: (file: File) => void;
+  // Stickers & Face tab
+  onAddStickerOverlay: (kind: StickerKind) => void;
+  onSelectOverlay: (id: string) => void;
+  onDeleteOverlay: (id: string) => void;
   // Text tab
   textOverlays: TextOverlayItem[];
   selectedTextId: string | null;
@@ -76,11 +102,14 @@ interface RightEditorPanelProps {
   onSelectTextOverlay: (id: string) => void;
   onUpdateTextOverlay: (id: string, patch: Partial<TextOverlayItem>) => void;
   onDeleteTextOverlay: (id: string) => void;
-  // Audio & Speed tab
+  // Audio & Speed + SFX tab
   audioAssets: AudioAsset[];
   audioSettings: AudioSettings;
+  selectedAudioClip: TimelineAudioClip | null;
   onUploadAudioFiles: (files: FileList | File[]) => void;
   onAddAudioToTimeline: (asset: AudioAsset) => void;
+  onUpdateAudioClip: (id: string, patch: Partial<TimelineAudioClip>) => void;
+  onAddBuiltInSfx: (kind: BuiltInSfxKind) => void;
   onUpdateAudioSettings: (patch: Partial<AudioSettings>) => void;
   // AI Studio tab
   clipNames: string[];
@@ -135,6 +164,16 @@ const CHROMA_SWATCHES = [
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
+const WEATHER_OPTIONS: Array<{
+  type: WeatherEffectType;
+  label: string;
+  icon: typeof CloudRain;
+}> = [
+  {type: 'rain', label: 'Rain', icon: CloudRain},
+  {type: 'snow', label: 'Snow', icon: CloudSnow},
+  {type: 'smoke', label: 'Smoke / Fog', icon: Wind},
+];
+
 export function RightEditorPanel({
   isCollapsed,
   onToggleCollapse,
@@ -143,6 +182,11 @@ export function RightEditorPanel({
   motionTransform,
   onUpdateMotionTransform,
   onResetMotionTransform,
+  effectItems,
+  selectedEffect,
+  onAddWeatherEffect,
+  onUpdateEffectItem,
+  onDeleteEffectItem,
   filters,
   onUpdateFilters,
   onApplyFilterPreset,
@@ -155,6 +199,9 @@ export function RightEditorPanel({
   onUpdateMainBgRemoval,
   onUpdateOverlayBgRemoval,
   onUploadBackgroundReplacement,
+  onAddStickerOverlay,
+  onSelectOverlay,
+  onDeleteOverlay,
   textOverlays,
   selectedTextId,
   totalDuration,
@@ -164,8 +211,11 @@ export function RightEditorPanel({
   onDeleteTextOverlay,
   audioAssets,
   audioSettings,
+  selectedAudioClip,
   onUploadAudioFiles,
   onAddAudioToTimeline,
+  onUpdateAudioClip,
+  onAddBuiltInSfx,
   onUpdateAudioSettings,
   clipNames,
   aspectRatio,
@@ -175,6 +225,13 @@ export function RightEditorPanel({
 }: RightEditorPanelProps) {
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [weatherType, setWeatherType] = useState<WeatherEffectType>('rain');
+  const [weatherIntensity, setWeatherIntensity] = useState(0.65);
+  const [weatherOpacity, setWeatherOpacity] = useState(0.75);
+  const [previewingSfx, setPreviewingSfx] = useState<BuiltInSfxKind | null>(
+    null
+  );
 
   const [aiTopic, setAiTopic] = useState('');
   const [aiTone, setAiTone] = useState('Engaging');
@@ -289,17 +346,27 @@ export function RightEditorPanel({
     }
   };
 
+  const updateAudioEffects = (patch: Partial<AudioEffectsConfig>) => {
+    onUpdateAudioSettings({
+      effects: {
+        ...audioSettings.effects,
+        ...patch,
+      },
+    });
+  };
+
   const tabs: Array<{
     id: RightPanelTab;
     label: string;
     shortLabel: string;
     icon: typeof TypeIcon;
   }> = [
-    {id: 'motion', label: 'Motion & Transform', shortLabel: 'Motion', icon: Move},
+    {id: 'motion', label: 'Motion & Effects', shortLabel: 'Effects', icon: Move},
     {id: 'filters', label: 'Filters & Color', shortLabel: 'Color', icon: Sliders},
     {id: 'bg-remove', label: 'BG Remove', shortLabel: 'BG Cut', icon: Eraser},
+    {id: 'stickers', label: 'Stickers & Face', shortLabel: 'Stickers', icon: Smile},
     {id: 'text', label: 'Text', shortLabel: 'Text', icon: TypeIcon},
-    {id: 'audio', label: 'Audio & Speed', shortLabel: 'Audio', icon: Music},
+    {id: 'audio', label: 'Audio & SFX', shortLabel: 'Audio', icon: Music},
     {id: 'ai', label: 'AI Studio', shortLabel: 'AI', icon: Sparkles},
   ];
 
@@ -369,11 +436,11 @@ export function RightEditorPanel({
         </button>
       </div>
 
-      {/* 6-Tab Bar */}
+      {/* 7-Tab Bar */}
       <div
         role="tablist"
         aria-label="Editing Tools"
-        className="shrink-0 grid grid-cols-6 border-b border-zinc-800/80 bg-[#0E1116]"
+        className="shrink-0 grid grid-cols-7 border-b border-zinc-800/80 bg-[#0E1116]"
       >
         {tabs.map((tab) => {
           const Icon = tab.icon;
@@ -574,6 +641,165 @@ export function RightEditorPanel({
                   <span>Flip V</span>
                 </button>
               </div>
+            </div>
+
+            {/* Weather & Atmospheric Particle Overlays */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-semibold text-zinc-100">
+                    Weather / Atmosphere
+                  </h3>
+                  <p className="text-[10px] text-zinc-400">
+                    {selectedEffect
+                      ? `Editing: ${selectedEffect.name}`
+                      : 'Animated particles on Effects track'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {WEATHER_OPTIONS.map((w) => {
+                  const Icon = w.icon;
+                  const active = selectedEffect
+                    ? selectedEffect.type === w.type
+                    : weatherType === w.type;
+                  return (
+                    <button
+                      key={w.type}
+                      type="button"
+                      onClick={() => {
+                        setWeatherType(w.type);
+                        if (selectedEffect) {
+                          onUpdateEffectItem(selectedEffect.id, {
+                            type: w.type,
+                            name: w.label,
+                          });
+                        }
+                      }}
+                      className={`py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+                        active
+                          ? 'border-violet-500 bg-violet-500/15 text-violet-200'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{w.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="weather-intensity" className="text-zinc-300">
+                    Intensity
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {Math.round(
+                      (selectedEffect
+                        ? selectedEffect.intensity
+                        : weatherIntensity) * 100
+                    )}
+                    %
+                  </span>
+                </div>
+                <input
+                  id="weather-intensity"
+                  type="range"
+                  min={0.2}
+                  max={1}
+                  step={0.05}
+                  value={
+                    selectedEffect ? selectedEffect.intensity : weatherIntensity
+                  }
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setWeatherIntensity(val);
+                    if (selectedEffect) {
+                      onUpdateEffectItem(selectedEffect.id, {intensity: val});
+                    }
+                  }}
+                  className="w-full accent-violet-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="weather-opacity" className="text-zinc-300">
+                    Opacity
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-400">
+                    {Math.round(
+                      (selectedEffect
+                        ? selectedEffect.opacity
+                        : weatherOpacity) * 100
+                    )}
+                    %
+                  </span>
+                </div>
+                <input
+                  id="weather-opacity"
+                  type="range"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={selectedEffect ? selectedEffect.opacity : weatherOpacity}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setWeatherOpacity(val);
+                    if (selectedEffect) {
+                      onUpdateEffectItem(selectedEffect.id, {opacity: val});
+                    }
+                  }}
+                  className="w-full accent-violet-500 cursor-pointer"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onAddWeatherEffect(
+                    weatherType,
+                    weatherIntensity,
+                    weatherOpacity
+                  )
+                }
+                className="w-full py-2 px-3 rounded-lg bg-violet-600 hover:bg-violet-500 text-[11px] font-medium text-white inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Apply Effect to Timeline</span>
+              </button>
+
+              {effectItems.length > 0 && (
+                <div className="space-y-1 max-h-28 overflow-y-auto pt-1">
+                  {effectItems.map((ef) => (
+                    <div
+                      key={ef.id}
+                      className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-[11px] ${
+                        selectedEffect?.id === ef.id
+                          ? 'border-violet-500 bg-violet-500/15 text-violet-100'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300'
+                      }`}
+                    >
+                      <span className="truncate">{ef.name}</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                          {formatTime(ef.startTime)}–{formatTime(ef.endTime)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteEffectItem(ef.id)}
+                          aria-label="Delete weather effect"
+                          className="p-0.5 rounded text-zinc-500 hover:text-red-400"
+                        >
+                          <Trash2 className="w-3 h-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -798,11 +1024,13 @@ export function RightEditorPanel({
                 className="w-full rounded-lg border border-zinc-700/80 bg-[#0B0D10] px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
               >
                 <option value="main">Main Video Track</option>
-                {overlayLayers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>
-                    Overlay: {layer.name}
-                  </option>
-                ))}
+                {overlayLayers
+                  .filter((l) => l.kind !== 'sticker')
+                  .map((layer) => (
+                    <option key={layer.id} value={layer.id}>
+                      Overlay: {layer.name}
+                    </option>
+                  ))}
               </select>
             </div>
 
@@ -1100,6 +1328,123 @@ export function RightEditorPanel({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === 'stickers' && (
+          <div className="space-y-4">
+            {/* Face Glow / Beauty Smooth */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-semibold text-zinc-100">
+                    Face Glow / Beauty Smooth
+                  </h2>
+                  <p className="text-[10px] text-zinc-400">
+                    Softens &amp; brightens skin tones naturally
+                  </p>
+                </div>
+                {filters.faceGlow > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onUpdateFilters({faceGlow: 0})}
+                    className="text-[10px] text-zinc-400 hover:text-zinc-100"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <label htmlFor="face-glow-slider" className="text-zinc-300">
+                    Beauty Intensity
+                  </label>
+                  <span className="font-mono tabular-nums text-pink-300">
+                    {filters.faceGlow}%
+                  </span>
+                </div>
+                <input
+                  id="face-glow-slider"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={filters.faceGlow}
+                  onChange={(e) =>
+                    onUpdateFilters({faceGlow: Number(e.target.value)})
+                  }
+                  className="w-full accent-pink-500 cursor-pointer"
+                />
+              </div>
+            </div>
+
+            {/* Stickers & Masks */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Fun Stickers &amp; Masks
+                </h3>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Click to add, then drag/resize onto faces on canvas
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {STICKER_CATALOG.map((sticker) => (
+                  <button
+                    key={sticker.kind}
+                    type="button"
+                    onClick={() => onAddStickerOverlay(sticker.kind)}
+                    className="rounded-lg border border-zinc-800 bg-[#0D1015] hover:border-sky-500/60 hover:bg-sky-500/5 p-2 flex flex-col items-center gap-1 transition-colors"
+                  >
+                    <img
+                      src={sticker.dataUrl}
+                      alt={sticker.label}
+                      className="w-9 h-9 object-contain pointer-events-none"
+                    />
+                    <span className="text-[10px] text-zinc-300 truncate max-w-full">
+                      {sticker.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {overlayLayers.some((l) => l.kind === 'sticker') && (
+                <div className="space-y-1 pt-2 border-t border-zinc-800/70 max-h-32 overflow-y-auto">
+                  <span className="block text-[10px] font-medium text-zinc-400">
+                    Placed Stickers
+                  </span>
+                  {overlayLayers
+                    .filter((l) => l.kind === 'sticker')
+                    .map((st) => (
+                      <div
+                        key={st.id}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-[#0D1015] px-2 py-1 text-[11px]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSelectOverlay(st.id)}
+                          className="flex-1 text-left text-zinc-200 truncate"
+                        >
+                          {st.name}
+                        </button>
+                        <span className="text-[10px] font-mono tabular-nums text-zinc-500 shrink-0">
+                          {formatTime(st.startTime)}–{formatTime(st.endTime)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteOverlay(st.id)}
+                          aria-label={`Remove ${st.name}`}
+                          className="p-0.5 rounded text-zinc-500 hover:text-red-400"
+                        >
+                          <Trash2 className="w-3 h-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1560,6 +1905,194 @@ export function RightEditorPanel({
                   ))}
                 </div>
               )}
+            </div>
+
+            {selectedAudioClip && (
+              <div className="pt-3 border-t border-zinc-800/80 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-emerald-300 font-medium truncate max-w-[160px]">
+                    Clip: {selectedAudioClip.name}
+                  </span>
+                  <span className="font-mono tabular-nums text-zinc-300">
+                    {Math.round((selectedAudioClip.volume ?? 1) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  value={selectedAudioClip.volume ?? 1}
+                  onChange={(e) =>
+                    onUpdateAudioClip(selectedAudioClip.id, {
+                      volume: Number(e.target.value),
+                    })
+                  }
+                  aria-label="Selected audio clip volume"
+                  className="w-full accent-emerald-500 cursor-pointer"
+                />
+              </div>
+            )}
+
+            {/* Built-in Sound Effects (SFX) Library */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Sound Effects (SFX)
+                </h3>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Preview or insert at playhead on Audio track
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                {BUILT_IN_SFX_LIST.map((sfx) => (
+                  <div
+                    key={sfx.kind}
+                    className="rounded-lg border border-zinc-800 bg-[#0D1015] px-2.5 py-1.5 flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-medium text-zinc-200 truncate">
+                        {sfx.name}
+                      </p>
+                      <p className="text-[10px] text-zinc-500 truncate">
+                        {sfx.description}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPreviewingSfx(sfx.kind);
+                          void playSfxPreview(sfx.kind).finally(() => {
+                            window.setTimeout(() => {
+                              setPreviewingSfx((curr) =>
+                                curr === sfx.kind ? null : curr
+                              );
+                            }, Math.round(sfx.duration * 1000));
+                          });
+                        }}
+                        title={`Preview ${sfx.name}`}
+                        aria-label={`Preview ${sfx.name}`}
+                        className={`p-1.5 rounded border transition-colors ${
+                          previewingSfx === sfx.kind
+                            ? 'border-blue-500 bg-blue-500/20 text-blue-300'
+                            : 'border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                        }`}
+                      >
+                        <Play className="w-3 h-3 fill-current" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onAddBuiltInSfx(sfx.kind)}
+                        className="px-2 py-1 rounded bg-emerald-600/90 hover:bg-emerald-500 text-[10px] font-medium text-white inline-flex items-center gap-0.5"
+                      >
+                        <Plus className="w-3 h-3" aria-hidden="true" />
+                        <span>Add</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Audio Echo & Reverb Effects */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Audio Echo &amp; Reverb
+                </h3>
+                <select
+                  aria-label="Audio effects target"
+                  value={audioSettings.effects.target}
+                  onChange={(e) =>
+                    updateAudioEffects({
+                      target: e.target.value as AudioEffectsConfig['target'],
+                    })
+                  }
+                  className="rounded border border-zinc-700 bg-[#0B0D10] px-1.5 py-0.5 text-[10px] text-zinc-200"
+                >
+                  <option value="both">All Audio</option>
+                  <option value="video">Video Only</option>
+                  <option value="music">Audio Track</option>
+                </select>
+              </div>
+
+              <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="toggle-echo"
+                    className="text-[11px] font-medium text-zinc-200 cursor-pointer"
+                  >
+                    Echo (Delay)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                      {audioSettings.effects.echoAmount}%
+                    </span>
+                    <input
+                      id="toggle-echo"
+                      type="checkbox"
+                      checked={audioSettings.effects.echoEnabled}
+                      onChange={(e) =>
+                        updateAudioEffects({echoEnabled: e.target.checked})
+                      }
+                      className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!audioSettings.effects.echoEnabled}
+                  value={audioSettings.effects.echoAmount}
+                  onChange={(e) =>
+                    updateAudioEffects({echoAmount: Number(e.target.value)})
+                  }
+                  aria-label="Echo intensity"
+                  className="w-full accent-blue-500 cursor-pointer disabled:opacity-40"
+                />
+              </div>
+
+              <div className="rounded-lg border border-zinc-800 bg-[#0D1015] p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="toggle-reverb"
+                    className="text-[11px] font-medium text-zinc-200 cursor-pointer"
+                  >
+                    Reverb (Room)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                      {audioSettings.effects.reverbAmount}%
+                    </span>
+                    <input
+                      id="toggle-reverb"
+                      type="checkbox"
+                      checked={audioSettings.effects.reverbEnabled}
+                      onChange={(e) =>
+                        updateAudioEffects({reverbEnabled: e.target.checked})
+                      }
+                      className="w-3.5 h-3.5 accent-blue-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!audioSettings.effects.reverbEnabled}
+                  value={audioSettings.effects.reverbAmount}
+                  onChange={(e) =>
+                    updateAudioEffects({reverbAmount: Number(e.target.value)})
+                  }
+                  aria-label="Reverb intensity"
+                  className="w-full accent-blue-500 cursor-pointer disabled:opacity-40"
+                />
+              </div>
             </div>
           </div>
         )}

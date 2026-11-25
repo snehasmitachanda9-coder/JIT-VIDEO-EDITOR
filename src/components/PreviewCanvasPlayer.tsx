@@ -28,10 +28,12 @@ import type {
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
+  TimelineEffectItem,
   TimelineVideoClip,
   VideoFilters,
   VideoFitMode,
 } from '../types/editor';
+import {AudioEffectsGraph} from '../utils/audioEffects';
 import {
   ASPECT_RATIO_DIMENSIONS,
   isMediaReady,
@@ -41,6 +43,7 @@ import {
   type TextOverlayBounds,
 } from '../utils/canvasRenderer';
 import {formatTime} from '../utils/formatTime';
+import {preloadStickerImage} from '../utils/stickerRenderer';
 import {
   computeVideoTimelineSegments,
   getAudioClipDuration,
@@ -50,6 +53,7 @@ import {
 
 interface PreviewCanvasPlayerProps {
   videoClips: TimelineVideoClip[];
+  effectItems: TimelineEffectItem[];
   overlayLayers: OverlayLayerItem[];
   audioClips: TimelineAudioClip[];
   textOverlays: TextOverlayItem[];
@@ -114,6 +118,7 @@ type CanvasDragState =
 
 export function PreviewCanvasPlayer({
   videoClips,
+  effectItems,
   overlayLayers,
   audioClips,
   textOverlays,
@@ -146,8 +151,21 @@ export function PreviewCanvasPlayer({
 }: PreviewCanvasPlayerProps) {
   const videoRefA = useRef<HTMLVideoElement | null>(null);
   const videoRefB = useRef<HTMLVideoElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+
+  const audioGraphRef = useRef<AudioEffectsGraph | null>(null);
+  const videoAudioConnectedRef = useRef(false);
+  const audioPoolRef = useRef<
+    Map<
+      string,
+      {
+        el: HTMLAudioElement;
+        url: string;
+        connected: boolean;
+        gainNode: GainNode | null;
+      }
+    >
+  >(new Map());
 
   const freezeImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const overlayElementsRef = useRef<Map<string, MediaSourceElement>>(new Map());
@@ -251,7 +269,12 @@ export function PreviewCanvasPlayer({
 
     for (const layer of overlayLayers) {
       if (map.has(layer.id)) continue;
-      if (layer.kind === 'image') {
+      if (layer.kind === 'sticker' && layer.stickerKind) {
+        void preloadStickerImage(layer.stickerKind).then((img) => {
+          map.set(layer.id, img);
+          setRenderTick((t) => t + 1);
+        });
+      } else if (layer.kind === 'image') {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => setRenderTick((t) => t + 1);
@@ -312,31 +335,172 @@ export function PreviewCanvasPlayer({
     mainBgRemoval.replacementAssetUrl,
   ]);
 
-  // Volume & playback rate
+  const ensureAudioGraph = useCallback(() => {
+    if (!audioGraphRef.current) {
+      const ctx = new AudioContext();
+      audioGraphRef.current = new AudioEffectsGraph(ctx, ctx.destination);
+    }
+    const graph = audioGraphRef.current;
+    if (graph.ctx.state === 'suspended') {
+      void graph.ctx.resume().catch(() => {});
+    }
+
+    const videoA = videoRefA.current;
+    if (videoA && !videoAudioConnectedRef.current) {
+      try {
+        const src = graph.ctx.createMediaElementSource(videoA);
+        src.connect(graph.videoInputGain);
+        videoAudioConnectedRef.current = true;
+        videoA.muted = false;
+        videoA.volume = 1;
+      } catch {
+        // already connected or unavailable
+      }
+    }
+
+    audioPoolRef.current.forEach((entry) => {
+      if (!entry.connected) {
+        try {
+          const src = graph.ctx.createMediaElementSource(entry.el);
+          const gainNode = graph.ctx.createGain();
+          src.connect(gainNode);
+          gainNode.connect(graph.musicInputGain);
+          entry.connected = true;
+          entry.gainNode = gainNode;
+          entry.el.muted = false;
+          entry.el.volume = 1;
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    graph.updateVolumes({
+      videoVolume: audioSettings.videoVolume,
+      videoMuted: audioSettings.videoMuted,
+      musicVolume: audioSettings.musicVolume,
+      musicMuted: audioSettings.musicMuted,
+    });
+    graph.updateEffects(audioSettings.effects);
+    return graph;
+  }, [
+    audioSettings.videoVolume,
+    audioSettings.videoMuted,
+    audioSettings.musicVolume,
+    audioSettings.musicMuted,
+    audioSettings.effects,
+  ]);
+
+  // Manage audio element pool for simultaneous Music + SFX clips
+  useEffect(() => {
+    const pool = audioPoolRef.current;
+    const activeIds = new Set(audioClips.map((c) => c.id));
+
+    for (const [id, entry] of pool.entries()) {
+      if (!activeIds.has(id)) {
+        entry.el.pause();
+        entry.el.removeAttribute('src');
+        entry.el.load();
+        pool.delete(id);
+      }
+    }
+
+    for (const clip of audioClips) {
+      const existing = pool.get(clip.id);
+      if (!existing) {
+        const el = document.createElement('audio');
+        el.crossOrigin = 'anonymous';
+        el.preload = 'auto';
+        el.src = clip.url;
+        pool.set(clip.id, {
+          el,
+          url: clip.url,
+          connected: false,
+          gainNode: null,
+        });
+      } else if (existing.url !== clip.url) {
+        existing.url = clip.url;
+        existing.el.src = clip.url;
+      }
+    }
+
+    if (audioGraphRef.current) {
+      ensureAudioGraph();
+    }
+
+    for (const clip of audioClips) {
+      const entry = pool.get(clip.id);
+      if (!entry) continue;
+      const clipVol = Math.max(0, Math.min(1.5, clip.volume ?? 1));
+      if (entry.gainNode && audioGraphRef.current) {
+        entry.gainNode.gain.setTargetAtTime(
+          clipVol,
+          audioGraphRef.current.ctx.currentTime,
+          0.015
+        );
+      } else {
+        entry.el.muted = audioSettings.musicMuted;
+        entry.el.volume = audioSettings.musicMuted
+          ? 0
+          : Math.min(1, audioSettings.musicVolume * clipVol);
+      }
+    }
+  }, [
+    audioClips,
+    audioSettings.musicMuted,
+    audioSettings.musicVolume,
+    ensureAudioGraph,
+  ]);
+
+  // Cleanup AudioContext & audio pool on unmount
+  useEffect(() => {
+    const pool = audioPoolRef.current;
+    return () => {
+      pool.forEach((entry) => {
+        entry.el.pause();
+        entry.el.removeAttribute('src');
+        entry.el.load();
+      });
+      pool.clear();
+      if (audioGraphRef.current) {
+        void audioGraphRef.current.ctx.close().catch(() => {});
+        audioGraphRef.current = null;
+      }
+    };
+  }, []);
+
+  // Volume, Audio Effects (Echo / Reverb) & playback rate
   useEffect(() => {
     const videoA = videoRefA.current;
     const videoB = videoRefB.current;
     if (videoA) {
-      videoA.muted = audioSettings.videoMuted;
-      videoA.volume = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
       videoA.playbackRate = audioSettings.playbackSpeed;
+      if (!videoAudioConnectedRef.current) {
+        videoA.muted = audioSettings.videoMuted;
+        videoA.volume = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
+      }
     }
     if (videoB) {
       videoB.muted = true;
       videoB.playbackRate = audioSettings.playbackSpeed;
     }
+    if (audioGraphRef.current) {
+      audioGraphRef.current.updateVolumes({
+        videoVolume: audioSettings.videoVolume,
+        videoMuted: audioSettings.videoMuted,
+        musicVolume: audioSettings.musicVolume,
+        musicMuted: audioSettings.musicMuted,
+      });
+      audioGraphRef.current.updateEffects(audioSettings.effects);
+    }
   }, [
     audioSettings.videoMuted,
     audioSettings.videoVolume,
+    audioSettings.musicMuted,
+    audioSettings.musicVolume,
     audioSettings.playbackSpeed,
+    audioSettings.effects,
   ]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.muted = audioSettings.musicMuted;
-    audio.volume = audioSettings.musicMuted ? 0 : audioSettings.musicVolume;
-  }, [audioSettings.musicMuted, audioSettings.musicVolume]);
 
   // Expose raw active video/freeze frame capture for Freeze Frame button
   useEffect(() => {
@@ -425,6 +589,7 @@ export function PreviewCanvasPlayer({
         motionTransform,
         mainBgRemoval,
         mainBgReplacementEl: bgReplacementElRef.current,
+        effectItems,
         overlayLayers,
         overlayElementsMap: overlayElementsRef.current,
         textOverlays,
@@ -447,6 +612,7 @@ export function PreviewCanvasPlayer({
       filters,
       motionTransform,
       mainBgRemoval,
+      effectItems,
       overlayLayers,
       textOverlays,
       selectedOverlayId,
@@ -610,41 +776,48 @@ export function PreviewCanvasPlayer({
 
   const syncAudioAtTime = useCallback(
     (timelineTime: number, playing: boolean) => {
-      const audio = audioRef.current;
-      if (!audio) return;
+      const pool = audioPoolRef.current;
 
-      const matching = audioClips.find((ac) => {
+      for (const ac of audioClips) {
+        const entry = pool.get(ac.id);
+        if (!entry) continue;
+        const audio = entry.el;
         const dur = getAudioClipDuration(ac);
-        return (
-          timelineTime >= ac.startTime && timelineTime < ac.startTime + dur
-        );
-      });
+        const active =
+          playing &&
+          timelineTime >= ac.startTime &&
+          timelineTime < ac.startTime + dur;
 
-      if (!playing || !matching) {
-        if (!audio.paused) audio.pause();
-        return;
-      }
-
-      const targetTime =
-        matching.trimStart + (timelineTime - matching.startTime);
-
-      if (audio.getAttribute('data-audio-url') !== matching.url) {
-        audio.setAttribute('data-audio-url', matching.url);
-        audio.src = matching.url;
-        audio.addEventListener(
-          'loadedmetadata',
-          () => {
-            audio.currentTime = targetTime;
-            void audio.play().catch(() => {});
-          },
-          {once: true}
-        );
-      } else {
-        if (Math.abs(audio.currentTime - targetTime) > 0.25) {
-          audio.currentTime = targetTime;
+        if (!active) {
+          if (!audio.paused) audio.pause();
+          continue;
         }
-        if (audio.paused) {
-          void audio.play().catch(() => {});
+
+        const targetTime = ac.trimStart + (timelineTime - ac.startTime);
+        if (audio.readyState < 1) {
+          audio.addEventListener(
+            'loadedmetadata',
+            () => {
+              try {
+                audio.currentTime = targetTime;
+              } catch {
+                // ignore
+              }
+              void audio.play().catch(() => {});
+            },
+            {once: true}
+          );
+        } else {
+          if (Math.abs(audio.currentTime - targetTime) > 0.25) {
+            try {
+              audio.currentTime = targetTime;
+            } catch {
+              // ignore
+            }
+          }
+          if (audio.paused) {
+            void audio.play().catch(() => {});
+          }
         }
       }
     },
@@ -659,9 +832,9 @@ export function PreviewCanvasPlayer({
       if (videoRefB.current && !videoRefB.current.paused) {
         videoRefB.current.pause();
       }
-      if (audioRef.current && !audioRef.current.paused) {
-        audioRef.current.pause();
-      }
+      audioPoolRef.current.forEach((entry) => {
+        if (!entry.el.paused) entry.el.pause();
+      });
       syncOverlayVideos(currentTime, false);
     }
   }, [isPlaying, currentTime, syncOverlayVideos]);
@@ -766,8 +939,11 @@ export function PreviewCanvasPlayer({
 
   const handleTogglePlay = () => {
     if (totalDuration <= 0) return;
-    if (!isPlaying && currentTime >= totalDuration - 0.05) {
-      onTimeChange(0);
+    if (!isPlaying) {
+      ensureAudioGraph();
+      if (currentTime >= totalDuration - 0.05) {
+        onTimeChange(0);
+      }
     }
     onPlayStateChange(!isPlaying);
   };
@@ -1057,11 +1233,10 @@ export function PreviewCanvasPlayer({
             if (!isPlaying) drawCurrentFrame(currentTime);
           }}
         />
-        <audio ref={audioRef} className="hidden" />
-
         {videoClips.length === 0 &&
         overlayLayers.length === 0 &&
-        textOverlays.length === 0 ? (
+        textOverlays.length === 0 &&
+        effectItems.length === 0 ? (
           <div className="max-w-sm w-full rounded-xl border border-zinc-800/80 bg-[#12151B]/95 px-6 py-7 text-center">
             <div className="mx-auto w-10 h-10 rounded-lg bg-zinc-800/80 border border-zinc-700/60 flex items-center justify-center text-zinc-300 mb-3.5">
               <Film className="w-5 h-5" aria-hidden="true" />
@@ -1194,14 +1369,16 @@ export function PreviewCanvasPlayer({
               />
             </div>
 
-            <button
-              type="button"
-              onClick={() => onOpenBgRemoveForOverlay(selectedOverlay.id)}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 font-medium"
-            >
-              <Scissors className="w-3 h-3" aria-hidden="true" />
-              <span>BG Remove</span>
-            </button>
+            {selectedOverlay.kind !== 'sticker' && (
+              <button
+                type="button"
+                onClick={() => onOpenBgRemoveForOverlay(selectedOverlay.id)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 font-medium"
+              >
+                <Scissors className="w-3 h-3" aria-hidden="true" />
+                <span>BG Remove</span>
+              </button>
+            )}
 
             <button
               type="button"

@@ -6,16 +6,19 @@ import type {
   OverlayLayerItem,
   TextOverlayItem,
   TimelineAudioClip,
+  TimelineEffectItem,
   TimelineVideoClip,
   VideoFilters,
   VideoFitMode,
 } from '../types/editor';
+import {AudioEffectsGraph} from './audioEffects';
 import {segmentFrameForExport} from './backgroundRemover';
 import {
   ASPECT_RATIO_DIMENSIONS,
   renderEditorFrame,
   type MediaSourceElement,
 } from './canvasRenderer';
+import {preloadStickerImage} from './stickerRenderer';
 import {
   computeTotalTimelineDuration,
   computeVideoTimelineSegments,
@@ -25,6 +28,7 @@ import {
 
 export interface ExportVideoOptions {
   videoClips: TimelineVideoClip[];
+  effectItems: TimelineEffectItem[];
   overlayLayers: OverlayLayerItem[];
   audioClips: TimelineAudioClip[];
   textOverlays: TextOverlayItem[];
@@ -123,6 +127,7 @@ export async function exportEditedVideo(
 ): Promise<ExportVideoResult> {
   const {
     videoClips,
+    effectItems,
     overlayLayers,
     audioClips,
     textOverlays,
@@ -141,7 +146,8 @@ export async function exportEditedVideo(
     overlayLayers,
     audioClips,
     textOverlays,
-    audioSettings.playbackSpeed
+    audioSettings.playbackSpeed,
+    effectItems
   );
 
   if (totalDuration <= 0 || (videoClips.length === 0 && overlayLayers.length === 0)) {
@@ -166,6 +172,14 @@ export async function exportEditedVideo(
 
   const audioCtx = new AudioContext();
   const destination = audioCtx.createMediaStreamDestination();
+  const audioFx = new AudioEffectsGraph(audioCtx, destination);
+  audioFx.updateVolumes({
+    videoVolume: audioSettings.videoVolume,
+    videoMuted: audioSettings.videoMuted,
+    musicVolume: audioSettings.musicVolume,
+    musicMuted: audioSettings.musicMuted,
+  });
+  audioFx.updateEffects(audioSettings.effects);
 
   // Primary & Outgoing video elements for seamless transitions
   const mainVideoEl = document.createElement('video');
@@ -177,10 +191,7 @@ export async function exportEditedVideo(
   mainVideoEl.playbackRate = audioSettings.playbackSpeed;
 
   const mainVideoSource = audioCtx.createMediaElementSource(mainVideoEl);
-  const mainVideoGain = audioCtx.createGain();
-  mainVideoGain.gain.value = audioSettings.videoMuted ? 0 : audioSettings.videoVolume;
-  mainVideoSource.connect(mainVideoGain);
-  mainVideoGain.connect(destination);
+  mainVideoSource.connect(audioFx.videoInputGain);
 
   const outgoingVideoEl = document.createElement('video');
   outgoingVideoEl.crossOrigin = 'anonymous';
@@ -202,19 +213,22 @@ export async function exportEditedVideo(
     }
   }
 
-  // Background music audio element
-  let musicEl: HTMLAudioElement | null = null;
-  if (audioClips.length > 0) {
-    musicEl = document.createElement('audio');
-    musicEl.crossOrigin = 'anonymous';
-    musicEl.preload = 'auto';
-    musicEl.muted = false;
-    musicEl.volume = 1;
-    const musicSource = audioCtx.createMediaElementSource(musicEl);
-    const musicGain = audioCtx.createGain();
-    musicGain.gain.value = audioSettings.musicMuted ? 0 : audioSettings.musicVolume;
-    musicSource.connect(musicGain);
-    musicGain.connect(destination);
+  // Per-clip audio elements so Music + multiple SFX can play simultaneously
+  const audioClipElements = new Map<string, HTMLAudioElement>();
+  for (const ac of audioClips) {
+    const el = document.createElement('audio');
+    el.crossOrigin = 'anonymous';
+    el.preload = 'auto';
+    el.muted = false;
+    el.volume = 1;
+    el.src = ac.url;
+    await waitForMediaReady(el);
+    const srcNode = audioCtx.createMediaElementSource(el);
+    const clipGain = audioCtx.createGain();
+    clipGain.gain.value = Math.max(0, Math.min(1.5, ac.volume ?? 1));
+    srcNode.connect(clipGain);
+    clipGain.connect(audioFx.musicInputGain);
+    audioClipElements.set(ac.id, el);
   }
 
   // Optional custom BG replacement asset element
@@ -241,12 +255,15 @@ export async function exportEditedVideo(
     }
   }
 
-  // Preload overlay image & video elements
+  // Preload overlay image, sticker & video elements
   const overlayElementsMap = new Map<string, MediaSourceElement>();
   const overlayVideoElements: HTMLVideoElement[] = [];
 
   for (const layer of overlayLayers) {
-    if (layer.kind === 'image') {
+    if (layer.kind === 'sticker' && layer.stickerKind) {
+      const img = await preloadStickerImage(layer.stickerKind);
+      overlayElementsMap.set(layer.id, img);
+    } else if (layer.kind === 'image') {
       try {
         const img = await waitForImage(layer.url);
         overlayElementsMap.set(layer.id, img);
@@ -299,15 +316,15 @@ export async function exportEditedVideo(
         // ignore
       }
     });
-    if (musicEl) {
+    audioClipElements.forEach((a) => {
       try {
-        musicEl.pause();
-        musicEl.removeAttribute('src');
-        musicEl.load();
+        a.pause();
+        a.removeAttribute('src');
+        a.load();
       } catch {
         // ignore
       }
-    }
+    });
     if (bgReplacementEl instanceof HTMLVideoElement) {
       try {
         bgReplacementEl.pause();
@@ -340,7 +357,6 @@ export async function exportEditedVideo(
     let currentTimelineTime = 0;
     let activeMainClipUrl: string | null = null;
     let activeOutgoingUrl: string | null = null;
-    let activeMusicClipId: string | null = null;
 
     if (bgReplacementEl instanceof HTMLVideoElement) {
       void bgReplacementEl.play().catch(() => {});
@@ -455,35 +471,29 @@ export async function exportEditedVideo(
         }
       }
 
-      // Sync background music
-      if (musicEl) {
-        const matchingAudio = audioClips.find((ac) => {
-          const dur = getAudioClipDuration(ac);
-          return (
-            currentTimelineTime >= ac.startTime &&
-            currentTimelineTime < ac.startTime + dur
-          );
-        });
-        if (matchingAudio) {
+      // Sync all active audio & SFX clips simultaneously
+      for (const ac of audioClips) {
+        const el = audioClipElements.get(ac.id);
+        if (!el) continue;
+        const dur = getAudioClipDuration(ac);
+        const active =
+          currentTimelineTime >= ac.startTime &&
+          currentTimelineTime < ac.startTime + dur;
+        if (active) {
           const targetAudioTime =
-            matchingAudio.trimStart +
-            (currentTimelineTime - matchingAudio.startTime);
-          if (activeMusicClipId !== matchingAudio.id) {
-            activeMusicClipId = matchingAudio.id;
-            musicEl.src = matchingAudio.url;
-            await waitForMediaReady(musicEl);
-            await seekMedia(musicEl, targetAudioTime);
-            void musicEl.play().catch(() => {});
-          } else {
-            if (Math.abs(musicEl.currentTime - targetAudioTime) > 0.25) {
-              musicEl.currentTime = targetAudioTime;
-            }
-            if (musicEl.paused) {
-              void musicEl.play().catch(() => {});
+            ac.trimStart + (currentTimelineTime - ac.startTime);
+          if (Math.abs(el.currentTime - targetAudioTime) > 0.22) {
+            try {
+              el.currentTime = targetAudioTime;
+            } catch {
+              // ignore
             }
           }
-        } else if (!musicEl.paused) {
-          musicEl.pause();
+          if (el.paused && !el.ended) {
+            void el.play().catch(() => {});
+          }
+        } else if (!el.paused) {
+          el.pause();
         }
       }
 
@@ -532,6 +542,7 @@ export async function exportEditedVideo(
         mainBgRemoval,
         mainBgReplacementEl: bgReplacementEl,
         precomputedMainMask: mainMask,
+        effectItems,
         overlayLayers,
         overlayElementsMap,
         precomputedOverlayMasks: overlayMasks,
@@ -545,7 +556,7 @@ export async function exportEditedVideo(
         98,
         Math.max(5, Math.round((currentTimelineTime / totalDuration) * 93) + 5)
       );
-      onProgress(pct, 'Rendering effects, transitions & audio...');
+      onProgress(pct, 'Rendering effects, particles, audio & transitions...');
 
       const elapsedMs = performance.now() - frameStartMs;
       const waitMs = Math.max(4, frameIntervalMs - elapsedMs);
@@ -565,7 +576,9 @@ export async function exportEditedVideo(
     onProgress(99, 'Finalizing video file...');
     mainVideoEl.pause();
     outgoingVideoEl.pause();
-    if (musicEl && !musicEl.paused) musicEl.pause();
+    audioClipElements.forEach((a) => {
+      if (!a.paused) a.pause();
+    });
     if (recorder.state !== 'inactive') recorder.stop();
 
     const blob = await recorderStopped;
