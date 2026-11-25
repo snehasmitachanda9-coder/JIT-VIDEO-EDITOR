@@ -33,13 +33,19 @@ import {
   type TextOverlayItem,
   type TimelineAudioClip,
   type TimelineEffectItem,
+  type TimelineEffectType,
   type TimelineVideoClip,
   type VideoFilters,
   type VideoFitMode,
-  type WeatherEffectType,
 } from './types/editor';
 import {clearMaskCache} from './utils/backgroundRemover';
 import {FILTER_PRESET_VALUES} from './utils/canvasRenderer';
+import {
+  getEffectCatalogEntry,
+  JIT_LOGO_URL,
+  WATERMARK_CORNER_POSITIONS,
+  type WatermarkCorner,
+} from './utils/effectCatalog';
 import {exportEditedVideo} from './utils/exportVideo';
 import {
   BUILT_IN_SFX_LIST,
@@ -675,30 +681,32 @@ export default function App() {
     [currentTime]
   );
 
-  // Weather & Atmospheric Effects Track
-  const handleAddWeatherEffect = useCallback(
-    (type: WeatherEffectType, intensity: number, opacity: number) => {
+  // Effects Track (Weather, Animated Motion, Glitch, Color Filters)
+  const handleAddTimelineEffect = useCallback(
+    (type: TimelineEffectType) => {
+      const entry = getEffectCatalogEntry(type);
       const start = Math.max(0, Number(currentTime.toFixed(2)));
-      const label =
-        type === 'rain' ? 'Rain' : type === 'snow' ? 'Snow' : 'Smoke / Fog';
-      const defaultEnd =
-        totalDuration > start + 0.5
-          ? Math.min(totalDuration, start + 5)
-          : start + 5;
+      const end = Number((start + 4).toFixed(2));
       const item: TimelineEffectItem = {
         id: makeId('effect'),
         type,
-        name: label,
-        intensity,
-        opacity,
+        category: entry.category,
+        name: entry.name,
+        icon: entry.icon,
+        intensity: entry.defaultIntensity,
+        opacity: entry.defaultOpacity,
         startTime: start,
-        endTime: Math.max(start + 1, defaultEnd),
+        endTime: end,
       };
       setEffectItems((prev) => [...prev, item]);
       setSelectedItem({track: 'effect', id: item.id});
     },
-    [currentTime, totalDuration]
+    [currentTime]
   );
+
+  const handleSelectEffectItem = useCallback((id: string) => {
+    setSelectedItem({track: 'effect', id});
+  }, []);
 
   const handleUpdateEffectItem = useCallback(
     (id: string, patch: Partial<TimelineEffectItem>) => {
@@ -719,7 +727,7 @@ export default function App() {
     [selectedItem]
   );
 
-  // Stickers & Masks on Overlay Track
+  // Stickers & Masks + Official JIT Logo Watermark on Overlay Track
   const handleAddStickerOverlay = useCallback(
     (stickerKind: StickerKind) => {
       const def = getStickerDefinition(stickerKind);
@@ -751,6 +759,42 @@ export default function App() {
       setSelectedItem({track: 'overlay', id: newLayer.id});
     },
     [currentTime, totalDuration]
+  );
+
+  const handleAddJitLogoWatermark = useCallback(
+    async (corner: WatermarkCorner) => {
+      let aspectRatio = 0.95;
+      try {
+        const meta = await extractImageMetadata(JIT_LOGO_URL);
+        if (meta.width > 0 && meta.height > 0) {
+          aspectRatio = meta.width / meta.height;
+        }
+      } catch {
+        aspectRatio = 0.95;
+      }
+      const {x, y} = WATERMARK_CORNER_POSITIONS[corner];
+      const newLayer: OverlayLayerItem = {
+        id: makeId('watermark'),
+        assetId: 'jit-watermark',
+        kind: 'image',
+        name: 'JIT Logo Watermark',
+        url: JIT_LOGO_URL,
+        thumbnailUrl: JIT_LOGO_URL,
+        sourceDuration: 0,
+        sourceTrimStart: 0,
+        startTime: 0,
+        endTime: Math.max(4, totalDuration > 0 ? Number(totalDuration.toFixed(2)) : 5),
+        x,
+        y,
+        width: 0.14,
+        aspectRatio,
+        opacity: 0.92,
+        bgRemoval: {...DEFAULT_BG_REMOVAL, replacementType: 'transparent'},
+      };
+      setOverlayLayers((prev) => [...prev, newLayer]);
+      setSelectedItem({track: 'overlay', id: newLayer.id});
+    },
+    [totalDuration]
   );
 
   // Built-in Synthesized SFX Insertion at Playhead
@@ -1311,7 +1355,8 @@ export default function App() {
             onResetMotionTransform={handleResetMotionTransform}
             effectItems={effectItems}
             selectedEffect={selectedEffect}
-            onAddWeatherEffect={handleAddWeatherEffect}
+            onSelectEffectItem={handleSelectEffectItem}
+            onAddTimelineEffect={handleAddTimelineEffect}
             onUpdateEffectItem={handleUpdateEffectItem}
             onDeleteEffectItem={handleDeleteEffectItem}
             filters={filters}
@@ -1327,6 +1372,9 @@ export default function App() {
             onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
             onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
             onAddStickerOverlay={handleAddStickerOverlay}
+            onAddJitLogoWatermark={(corner) => {
+              void handleAddJitLogoWatermark(corner);
+            }}
             onSelectOverlay={handleSelectOverlay}
             onDeleteOverlay={handleDeleteOverlay}
             textOverlays={textOverlays}

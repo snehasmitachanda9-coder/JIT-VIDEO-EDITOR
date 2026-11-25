@@ -7,6 +7,7 @@ import type {
   OverlayLayerItem,
   TextOverlayItem,
   TimelineEffectItem,
+  TimelineEffectType,
   VideoFilters,
   VideoFitMode,
 } from '../types/editor';
@@ -388,6 +389,54 @@ function resolveCutoutSource(params: {
   return source;
 }
 
+interface TimedMotionDelta {
+  zoomMultiplier: number;
+  offsetX: number;
+  offsetY: number;
+  angleDeg: number;
+}
+
+function computeTimedMotionDelta(
+  effectItems: TimelineEffectItem[],
+  currentTime: number,
+  canvasWidth: number,
+  canvasHeight: number
+): TimedMotionDelta {
+  let zoomMultiplier = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let angleDeg = 0;
+
+  for (const ef of effectItems) {
+    if (ef.category !== 'motion') continue;
+    if (currentTime < ef.startTime || currentTime > ef.endTime) continue;
+
+    const dur = Math.max(0.1, ef.endTime - ef.startTime);
+    const progress = Math.max(0, Math.min(1, (currentTime - ef.startTime) / dur));
+    const strength =
+      Math.max(0.1, Math.min(1, ef.intensity)) *
+      Math.max(0.05, Math.min(1, ef.opacity));
+
+    if (ef.type === 'zoom-in') {
+      zoomMultiplier *= 1 + 0.55 * strength * progress;
+    } else if (ef.type === 'zoom-out') {
+      zoomMultiplier *= 1 + 0.55 * strength * (1 - progress);
+    } else if (ef.type === 'camera-shake') {
+      const t = currentTime;
+      offsetX +=
+        (Math.sin(t * 19.3) * 0.6 + Math.cos(t * 31.7) * 0.4) *
+        (canvasWidth * 0.024 * strength);
+      offsetY +=
+        (Math.cos(t * 21.1) * 0.6 + Math.sin(t * 33.9) * 0.4) *
+        (canvasHeight * 0.024 * strength);
+      angleDeg += Math.sin(t * 14.5) * 2.6 * strength;
+      zoomMultiplier *= 1 + 0.12 * strength;
+    }
+  }
+
+  return {zoomMultiplier, offsetX, offsetY, angleDeg};
+}
+
 function drawTransformedSingleSource(params: {
   ctx: CanvasRenderingContext2D;
   canvasWidth: number;
@@ -398,6 +447,7 @@ function drawTransformedSingleSource(params: {
   fitMode: VideoFitMode;
   filters: VideoFilters;
   motionTransform: MotionTransform;
+  timedMotion?: TimedMotionDelta;
   clipProgress: number;
   currentTime: number;
   isExport: boolean;
@@ -412,6 +462,7 @@ function drawTransformedSingleSource(params: {
     fitMode,
     filters,
     motionTransform,
+    timedMotion,
     clipProgress,
     currentTime,
     isExport,
@@ -438,7 +489,7 @@ function drawTransformedSingleSource(params: {
     );
   }
 
-  // Compute combined static + animated motion transform
+  // Compute combined static + animated motion transform + timed Effects track motion
   let animZoom = 1;
   let shakeOffsetX = 0;
   let shakeOffsetY = 0;
@@ -460,10 +511,22 @@ function drawTransformedSingleSource(params: {
     animZoom = 1.06; // Slight zoom to prevent black border flicker during shake
   }
 
-  const totalZoom = (motionTransform.zoom / 100) * animZoom;
-  const panPxX = (motionTransform.panX / 100) * (canvasWidth * 0.5) + shakeOffsetX;
-  const panPxY = (motionTransform.panY / 100) * (canvasHeight * 0.5) + shakeOffsetY;
-  const rad = ((motionTransform.rotate + shakeAngleDeg) * Math.PI) / 180;
+  const timedZoom = timedMotion ? timedMotion.zoomMultiplier : 1;
+  const totalZoom = (motionTransform.zoom / 100) * animZoom * timedZoom;
+  const panPxX =
+    (motionTransform.panX / 100) * (canvasWidth * 0.5) +
+    shakeOffsetX +
+    (timedMotion ? timedMotion.offsetX : 0);
+  const panPxY =
+    (motionTransform.panY / 100) * (canvasHeight * 0.5) +
+    shakeOffsetY +
+    (timedMotion ? timedMotion.offsetY : 0);
+  const rad =
+    ((motionTransform.rotate +
+      shakeAngleDeg +
+      (timedMotion ? timedMotion.angleDeg : 0)) *
+      Math.PI) /
+    180;
   const scaleX = totalZoom * (motionTransform.flipH ? -1 : 1);
   const scaleY = totalZoom * (motionTransform.flipV ? -1 : 1);
 
@@ -620,6 +683,116 @@ function seededRand(seed: number): number {
   return x - Math.floor(x);
 }
 
+function isPresetType(
+  type: TimelineEffectType
+): type is Exclude<FilterPreset, 'none'> {
+  return type in FILTER_PRESET_VALUES;
+}
+
+function drawTimedFilterAndGlitchEffects(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  effectItems: TimelineEffectItem[],
+  currentTime: number
+) {
+  for (const ef of effectItems) {
+    if (ef.category !== 'filter') continue;
+    if (currentTime < ef.startTime || currentTime > ef.endTime) continue;
+
+    const intensity = Math.max(0.1, Math.min(1, ef.intensity));
+    const opacity = Math.max(0.05, Math.min(1, ef.opacity));
+
+    const snapshot = getScratchCanvas('timed-effect-snapshot');
+    if (snapshot.width !== canvasWidth || snapshot.height !== canvasHeight) {
+      snapshot.width = canvasWidth;
+      snapshot.height = canvasHeight;
+    }
+    const sctx = snapshot.getContext('2d');
+    if (!sctx) continue;
+    sctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    sctx.drawImage(ctx.canvas, 0, 0, canvasWidth, canvasHeight);
+
+    if (ef.type === 'glitch') {
+      const pulse = Math.abs(Math.sin(currentTime * 15.7));
+      const shift = (5 + pulse * 26 * intensity) * (canvasWidth / 1280);
+
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.95, 0.35 + intensity * 0.5) * opacity;
+      ctx.globalCompositeOperation = 'screen';
+      ctx.drawImage(snapshot, shift, 0, canvasWidth, canvasHeight);
+      ctx.drawImage(snapshot, -shift, 0, canvasWidth, canvasHeight);
+
+      // Horizontal glitch tear bars
+      const sliceCount = Math.max(2, Math.round(2 + intensity * 5));
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 0; i < sliceCount; i++) {
+        const seed = Math.sin(currentTime * (19.3 + i * 7.1) + i * 2.4);
+        if (seed > -0.15) {
+          const yNorm = Math.abs(Math.sin(i * 4.7 + Math.floor(currentTime * 12)));
+          const sliceY = yNorm * (canvasHeight * 0.88);
+          const sliceH = Math.max(8, canvasHeight * (0.03 + intensity * 0.05));
+          const xOffset = seed * shift * 2.4;
+          ctx.globalAlpha = (0.4 + intensity * 0.45) * opacity;
+          ctx.drawImage(
+            snapshot,
+            0,
+            sliceY,
+            canvasWidth,
+            sliceH,
+            xOffset,
+            sliceY,
+            canvasWidth,
+            sliceH
+          );
+        }
+      }
+
+      // Subtle magenta/cyan chromatic bar accent
+      ctx.globalAlpha = 0.14 * intensity * opacity;
+      ctx.fillStyle = pulse > 0.5 ? '#EC4899' : '#06B6D4';
+      ctx.fillRect(
+        0,
+        ((currentTime * 210) % canvasHeight),
+        canvasWidth,
+        Math.max(4, canvasHeight * 0.015)
+      );
+      ctx.restore();
+      continue;
+    }
+
+    if (isPresetType(ef.type)) {
+      const target = FILTER_PRESET_VALUES[ef.type];
+      const gradedFilters: VideoFilters = {
+        preset: ef.type,
+        brightness: 100 + (target.brightness - 100) * intensity,
+        contrast: 100 + (target.contrast - 100) * intensity,
+        saturation: 100 + (target.saturation - 100) * intensity,
+        blur: target.blur * intensity,
+        hueRotate: target.hueRotate * intensity,
+        vignette: target.vignette * intensity * opacity,
+        sharpen: 0,
+        faceGlow: 0,
+      };
+
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      ctx.filter = buildCanvasFilterString(gradedFilters);
+      ctx.drawImage(snapshot, 0, 0, canvasWidth, canvasHeight);
+      ctx.restore();
+
+      // Apply preset color wash + vignette scaled by opacity & intensity
+      ctx.save();
+      ctx.globalAlpha = opacity * intensity;
+      drawColorGradingAndVignette(ctx, canvasWidth, canvasHeight, {
+        ...gradedFilters,
+        vignette: target.vignette * intensity,
+      });
+      ctx.restore();
+    }
+  }
+}
+
 function drawWeatherEffects(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -630,11 +803,12 @@ function drawWeatherEffects(
   const scaleFactor = Math.min(canvasWidth, canvasHeight) / 720;
 
   for (const ef of effectItems) {
+    if (ef.category !== 'weather') continue;
     if (currentTime < ef.startTime || currentTime > ef.endTime) {
       continue;
     }
 
-    const intensity = Math.max(0.2, Math.min(1, ef.intensity));
+    const intensity = Math.max(0.1, Math.min(1, ef.intensity));
     const opacity = Math.max(0.05, Math.min(1, ef.opacity));
     const localTime = Math.max(0, currentTime - ef.startTime);
     const baseSeed = hashSeed(ef.id);
@@ -853,6 +1027,13 @@ export function renderEditorFrame(params: {
   }
 
   // 2. Main Video / Freeze Frame Layer (with Motion, Filters, BG Removal & Clip Transitions)
+  const timedMotion = computeTimedMotionDelta(
+    effectItems,
+    currentTime,
+    canvasWidth,
+    canvasHeight
+  );
+
   if (mainReady && primarySource) {
     const primaryCutout = resolveCutoutSource({
       key: 'main',
@@ -896,6 +1077,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: outgoingClipProgress,
           currentTime,
           isExport,
@@ -914,6 +1096,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: primaryClipProgress,
           currentTime,
           isExport,
@@ -932,6 +1115,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: outgoingClipProgress,
           currentTime,
           isExport,
@@ -950,6 +1134,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: primaryClipProgress,
           currentTime,
           isExport,
@@ -972,6 +1157,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: outgoingClipProgress,
           currentTime,
           isExport,
@@ -994,6 +1180,7 @@ export function renderEditorFrame(params: {
           fitMode,
           filters,
           motionTransform,
+          timedMotion,
           clipProgress: primaryClipProgress,
           currentTime,
           isExport,
@@ -1011,6 +1198,7 @@ export function renderEditorFrame(params: {
         fitMode,
         filters,
         motionTransform,
+        timedMotion,
         clipProgress: primaryClipProgress,
         currentTime,
         isExport,
@@ -1020,6 +1208,15 @@ export function renderEditorFrame(params: {
     drawColorGradingAndVignette(ctx, canvasWidth, canvasHeight, filters);
     if (filters.faceGlow > 0) {
       drawFaceGlowBeautyPass(ctx, canvasWidth, canvasHeight, filters.faceGlow);
+    }
+    if (effectItems.length > 0) {
+      drawTimedFilterAndGlitchEffects(
+        ctx,
+        canvasWidth,
+        canvasHeight,
+        effectItems,
+        currentTime
+      );
     }
   }
 

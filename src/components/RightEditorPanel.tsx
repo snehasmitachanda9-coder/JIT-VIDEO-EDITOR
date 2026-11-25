@@ -38,7 +38,6 @@ import type {
   BuiltInSfxKind,
   FilterPreset,
   MediaAsset,
-  MotionPreset,
   MotionTransform,
   OverlayLayerItem,
   RightPanelTab,
@@ -46,10 +45,18 @@ import type {
   TextOverlayItem,
   TimelineAudioClip,
   TimelineEffectItem,
+  TimelineEffectType,
   VideoFilters,
   WeatherEffectType,
 } from '../types/editor';
 import {warmUpSelfieSegmentation} from '../utils/backgroundRemover';
+import {
+  getEffectCatalogEntry,
+  getEffectIntensityLabel,
+  JIT_LOGO_URL,
+  WATERMARK_CORNER_POSITIONS,
+  type WatermarkCorner,
+} from '../utils/effectCatalog';
 import {formatFileSize, formatTime} from '../utils/formatTime';
 import {BUILT_IN_SFX_LIST, playSfxPreview} from '../utils/soundEffects';
 import {STICKER_CATALOG} from '../utils/stickerRenderer';
@@ -59,17 +66,14 @@ interface RightEditorPanelProps {
   onToggleCollapse: () => void;
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
-  // Motion & Transform + Weather Effects tab
+  // Motion & Transform + Timeline Effects tab
   motionTransform: MotionTransform;
   onUpdateMotionTransform: (patch: Partial<MotionTransform>) => void;
   onResetMotionTransform: () => void;
   effectItems: TimelineEffectItem[];
   selectedEffect: TimelineEffectItem | null;
-  onAddWeatherEffect: (
-    type: WeatherEffectType,
-    intensity: number,
-    opacity: number
-  ) => void;
+  onSelectEffectItem: (id: string) => void;
+  onAddTimelineEffect: (type: TimelineEffectType) => void;
   onUpdateEffectItem: (id: string, patch: Partial<TimelineEffectItem>) => void;
   onDeleteEffectItem: (id: string) => void;
   // Filters & Color tab
@@ -89,8 +93,9 @@ interface RightEditorPanelProps {
     patch: Partial<BackgroundRemovalConfig>
   ) => void;
   onUploadBackgroundReplacement: (file: File) => void;
-  // Stickers & Face tab
+  // Stickers & Face + JIT Watermark tab
   onAddStickerOverlay: (kind: StickerKind) => void;
+  onAddJitLogoWatermark: (corner: WatermarkCorner) => void;
   onSelectOverlay: (id: string) => void;
   onDeleteOverlay: (id: string) => void;
   // Text tab
@@ -149,11 +154,14 @@ const FILTER_PRESETS: Array<{id: FilterPreset; label: string}> = [
   {id: 'warm', label: 'Warm'},
 ];
 
-const MOTION_PRESETS: Array<{id: MotionPreset; label: string}> = [
-  {id: 'none', label: 'Static'},
-  {id: 'zoom-in', label: 'Slow Zoom In'},
-  {id: 'zoom-out', label: 'Slow Zoom Out'},
-  {id: 'camera-shake', label: 'Camera Shake'},
+const TIMED_MOTION_OPTIONS: Array<{
+  type: 'zoom-in' | 'zoom-out' | 'camera-shake';
+  label: string;
+  icon: string;
+}> = [
+  {type: 'zoom-in', label: 'Slow Zoom In', icon: '🔍'},
+  {type: 'zoom-out', label: 'Slow Zoom Out', icon: '🔎'},
+  {type: 'camera-shake', label: 'Camera Shake', icon: '📳'},
 ];
 
 const CHROMA_SWATCHES = [
@@ -184,7 +192,8 @@ export function RightEditorPanel({
   onResetMotionTransform,
   effectItems,
   selectedEffect,
-  onAddWeatherEffect,
+  onSelectEffectItem,
+  onAddTimelineEffect,
   onUpdateEffectItem,
   onDeleteEffectItem,
   filters,
@@ -200,6 +209,7 @@ export function RightEditorPanel({
   onUpdateOverlayBgRemoval,
   onUploadBackgroundReplacement,
   onAddStickerOverlay,
+  onAddJitLogoWatermark,
   onSelectOverlay,
   onDeleteOverlay,
   textOverlays,
@@ -226,9 +236,8 @@ export function RightEditorPanel({
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [weatherType, setWeatherType] = useState<WeatherEffectType>('rain');
-  const [weatherIntensity, setWeatherIntensity] = useState(0.65);
-  const [weatherOpacity, setWeatherOpacity] = useState(0.75);
+  const [watermarkCorner, setWatermarkCorner] =
+    useState<WatermarkCorner>('top-right');
   const [previewingSfx, setPreviewingSfx] = useState<BuiltInSfxKind | null>(
     null
   );
@@ -468,40 +477,128 @@ export function RightEditorPanel({
 
       {/* Tab Body */}
       <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
-        {activeTab === 'motion' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-zinc-100">
-                Motion &amp; Transform
-              </h2>
-              <button
-                type="button"
-                onClick={onResetMotionTransform}
-                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
-              >
-                <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                <span>Reset</span>
-              </button>
+        {/* Dedicated Active Effect Inspector Box (shown whenever an Effect block is added or selected) */}
+        {selectedEffect && (
+          <div className="rounded-xl border border-violet-500/50 bg-[#151923] p-3 space-y-3 shadow-lg">
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm leading-none" aria-hidden="true">
+                    {selectedEffect.icon}
+                  </span>
+                  <h3 className="text-xs font-semibold text-white truncate">
+                    {selectedEffect.name}
+                  </h3>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Selected Effect on Timeline
+                </p>
+              </div>
+              <span className="px-2 py-0.5 rounded bg-violet-500/20 border border-violet-500/40 text-[10px] font-mono tabular-nums text-violet-200 shrink-0">
+                {(selectedEffect.endTime - selectedEffect.startTime).toFixed(1)}s
+              </span>
             </div>
 
-            {/* Animated Motion Presets */}
+            {/* (a) Exact Start Time & End Time (sec) */}
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label
+                  htmlFor="effect-start-sec"
+                  className="block text-[10px] font-medium text-zinc-300 mb-1"
+                >
+                  Start Time (sec)
+                </label>
+                <input
+                  id="effect-start-sec"
+                  type="number"
+                  min={0}
+                  max={Math.max(0, Number((selectedEffect.endTime - 0.2).toFixed(2)))}
+                  step={0.1}
+                  value={Number(selectedEffect.startTime.toFixed(2))}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    if (!Number.isFinite(val)) return;
+                    const clamped = Math.max(
+                      0,
+                      Math.min(selectedEffect.endTime - 0.2, val)
+                    );
+                    onUpdateEffectItem(selectedEffect.id, {startTime: clamped});
+                  }}
+                  className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-violet-500"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="effect-end-sec"
+                  className="block text-[10px] font-medium text-zinc-300 mb-1"
+                >
+                  End Time (sec)
+                </label>
+                <input
+                  id="effect-end-sec"
+                  type="number"
+                  min={Number((selectedEffect.startTime + 0.2).toFixed(2))}
+                  step={0.1}
+                  value={Number(selectedEffect.endTime.toFixed(2))}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    if (!Number.isFinite(val)) return;
+                    const clamped = Math.max(selectedEffect.startTime + 0.2, val);
+                    onUpdateEffectItem(selectedEffect.id, {endTime: clamped});
+                  }}
+                  className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-violet-500"
+                />
+              </div>
+            </div>
+
+            {/* (b) Effect Intensity / Amount + Low / Medium / High presets */}
             <div className="space-y-1.5">
-              <span className="block text-[11px] font-medium text-zinc-400">
-                Animated Presets
-              </span>
-              <div className="grid grid-cols-2 gap-1.5">
-                {MOTION_PRESETS.map((preset) => {
-                  const active = motionTransform.preset === preset.id;
+              <div className="flex items-center justify-between text-[11px]">
+                <label
+                  htmlFor="selected-effect-intensity"
+                  className="font-medium text-zinc-200"
+                >
+                  Effect Intensity / Amount
+                </label>
+                <span className="font-mono tabular-nums text-violet-300 font-semibold">
+                  {Math.round(selectedEffect.intensity * 100)}%
+                </span>
+              </div>
+              <input
+                id="selected-effect-intensity"
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.01}
+                value={selectedEffect.intensity}
+                onChange={(e) =>
+                  onUpdateEffectItem(selectedEffect.id, {
+                    intensity: Number(e.target.value),
+                  })
+                }
+                className="w-full accent-violet-500 cursor-pointer"
+              />
+              <div className="flex items-center justify-between gap-1 pt-0.5">
+                {[
+                  {label: 'Low', val: 0.25},
+                  {label: 'Medium', val: 0.6},
+                  {label: 'High', val: 0.95},
+                ].map((preset) => {
+                  const isCurrent =
+                    Math.abs(selectedEffect.intensity - preset.val) < 0.08;
                   return (
                     <button
-                      key={preset.id}
+                      key={preset.label}
                       type="button"
                       onClick={() =>
-                        onUpdateMotionTransform({preset: preset.id})
+                        onUpdateEffectItem(selectedEffect.id, {
+                          intensity: preset.val,
+                        })
                       }
-                      className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
-                        active
-                          ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                      className={`flex-1 py-1 rounded border text-[10px] font-medium transition-colors ${
+                        isCurrent
+                          ? 'border-violet-400 bg-violet-500/25 text-violet-100'
                           : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
                       }`}
                     >
@@ -510,9 +607,145 @@ export function RightEditorPanel({
                   );
                 })}
               </div>
+              <p className="text-[10px] text-zinc-400">
+                Level:{' '}
+                <span className="text-zinc-200 font-medium">
+                  {getEffectIntensityLabel(
+                    selectedEffect.type,
+                    selectedEffect.intensity
+                  )}
+                </span>
+              </p>
             </div>
 
-            <div className="space-y-3 pt-2 border-t border-zinc-800/80">
+            {/* Opacity Slider */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[11px]">
+                <label
+                  htmlFor="selected-effect-opacity"
+                  className="font-medium text-zinc-200"
+                >
+                  Opacity
+                </label>
+                <span className="font-mono tabular-nums text-zinc-300">
+                  {Math.round(selectedEffect.opacity * 100)}%
+                </span>
+              </div>
+              <input
+                id="selected-effect-opacity"
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.01}
+                value={selectedEffect.opacity}
+                onChange={(e) =>
+                  onUpdateEffectItem(selectedEffect.id, {
+                    opacity: Number(e.target.value),
+                  })
+                }
+                className="w-full accent-blue-500 cursor-pointer"
+              />
+            </div>
+
+            {/* (c) Prominent Red Remove Effect Button */}
+            <button
+              type="button"
+              onClick={() => onDeleteEffectItem(selectedEffect.id)}
+              className="w-full py-1.5 px-3 rounded-lg bg-red-600/90 hover:bg-red-500 text-[11px] font-semibold text-white inline-flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Remove Effect</span>
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'motion' && (
+          <div className="space-y-4">
+            {/* Weather / Atmosphere — Instant 1-Click Timeline Insertion */}
+            <div className="space-y-2">
+              <div>
+                <h2 className="text-xs font-semibold text-zinc-100">
+                  Weather &amp; Atmosphere
+                </h2>
+                <p className="text-[10px] text-zinc-400">
+                  Click any effect to add a 4s block at playhead
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {WEATHER_OPTIONS.map((w) => {
+                  const Icon = w.icon;
+                  const active = selectedEffect?.type === w.type;
+                  const meta = getEffectCatalogEntry(w.type);
+                  return (
+                    <button
+                      key={w.type}
+                      type="button"
+                      onClick={() => onAddTimelineEffect(w.type)}
+                      title={`Add 4s ${meta.name} block at playhead`}
+                      className={`py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+                        active
+                          ? 'border-violet-400 bg-violet-500/20 text-violet-100'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-violet-500/60 hover:bg-violet-500/10'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5 text-violet-300" aria-hidden="true" />
+                      <span>+ {w.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Animated Camera Motion — Instant 1-Click Timeline Insertion */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2">
+              <div>
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Animated Camera Effects
+                </h3>
+                <p className="text-[10px] text-zinc-400">
+                  Adds timed Zoom or Shake block on Effects track
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5">
+                {TIMED_MOTION_OPTIONS.map((opt) => {
+                  const active = selectedEffect?.type === opt.type;
+                  return (
+                    <button
+                      key={opt.type}
+                      type="button"
+                      onClick={() => onAddTimelineEffect(opt.type)}
+                      className={`px-2 py-2 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors ${
+                        active
+                          ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-cyan-500/60 hover:bg-cyan-500/10'
+                      }`}
+                    >
+                      <span aria-hidden="true">{opt.icon}</span>
+                      <span>+ {opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Global Static Transform & Framing */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-zinc-100">
+                  Static Transform &amp; Framing
+                </h3>
+                <button
+                  type="button"
+                  onClick={onResetMotionTransform}
+                  className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
+                >
+                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                  <span>Reset</span>
+                </button>
+              </div>
+
               <div>
                 <div className="flex items-center justify-between text-[11px] mb-1">
                   <label htmlFor="motion-zoom" className="text-zinc-300">
@@ -643,136 +876,12 @@ export function RightEditorPanel({
               </div>
             </div>
 
-            {/* Weather & Atmospheric Particle Overlays */}
-            <div className="pt-3 border-t border-zinc-800/80 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-xs font-semibold text-zinc-100">
-                    Weather / Atmosphere
-                  </h3>
-                  <p className="text-[10px] text-zinc-400">
-                    {selectedEffect
-                      ? `Editing: ${selectedEffect.name}`
-                      : 'Animated particles on Effects track'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5">
-                {WEATHER_OPTIONS.map((w) => {
-                  const Icon = w.icon;
-                  const active = selectedEffect
-                    ? selectedEffect.type === w.type
-                    : weatherType === w.type;
-                  return (
-                    <button
-                      key={w.type}
-                      type="button"
-                      onClick={() => {
-                        setWeatherType(w.type);
-                        if (selectedEffect) {
-                          onUpdateEffectItem(selectedEffect.id, {
-                            type: w.type,
-                            name: w.label,
-                          });
-                        }
-                      }}
-                      className={`py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
-                        active
-                          ? 'border-violet-500 bg-violet-500/15 text-violet-200'
-                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>{w.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="weather-intensity" className="text-zinc-300">
-                    Intensity
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {Math.round(
-                      (selectedEffect
-                        ? selectedEffect.intensity
-                        : weatherIntensity) * 100
-                    )}
-                    %
-                  </span>
-                </div>
-                <input
-                  id="weather-intensity"
-                  type="range"
-                  min={0.2}
-                  max={1}
-                  step={0.05}
-                  value={
-                    selectedEffect ? selectedEffect.intensity : weatherIntensity
-                  }
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setWeatherIntensity(val);
-                    if (selectedEffect) {
-                      onUpdateEffectItem(selectedEffect.id, {intensity: val});
-                    }
-                  }}
-                  className="w-full accent-violet-500 cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between text-[11px] mb-1">
-                  <label htmlFor="weather-opacity" className="text-zinc-300">
-                    Opacity
-                  </label>
-                  <span className="font-mono tabular-nums text-zinc-400">
-                    {Math.round(
-                      (selectedEffect
-                        ? selectedEffect.opacity
-                        : weatherOpacity) * 100
-                    )}
-                    %
-                  </span>
-                </div>
-                <input
-                  id="weather-opacity"
-                  type="range"
-                  min={0.1}
-                  max={1}
-                  step={0.05}
-                  value={selectedEffect ? selectedEffect.opacity : weatherOpacity}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setWeatherOpacity(val);
-                    if (selectedEffect) {
-                      onUpdateEffectItem(selectedEffect.id, {opacity: val});
-                    }
-                  }}
-                  className="w-full accent-violet-500 cursor-pointer"
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  onAddWeatherEffect(
-                    weatherType,
-                    weatherIntensity,
-                    weatherOpacity
-                  )
-                }
-                className="w-full py-2 px-3 rounded-lg bg-violet-600 hover:bg-violet-500 text-[11px] font-medium text-white inline-flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Apply Effect to Timeline</span>
-              </button>
-
-              {effectItems.length > 0 && (
-                <div className="space-y-1 max-h-28 overflow-y-auto pt-1">
+            {effectItems.length > 0 && (
+              <div className="pt-3 border-t border-zinc-800/80 space-y-1.5">
+                <span className="block text-[10px] font-medium text-zinc-400">
+                  Timeline Effects ({effectItems.length})
+                </span>
+                <div className="space-y-1 max-h-28 overflow-y-auto">
                   {effectItems.map((ef) => (
                     <div
                       key={ef.id}
@@ -782,38 +891,47 @@ export function RightEditorPanel({
                           : 'border-zinc-800 bg-[#0D1015] text-zinc-300'
                       }`}
                     >
-                      <span className="truncate">{ef.name}</span>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-[10px] font-mono tabular-nums text-zinc-400">
-                          {formatTime(ef.startTime)}–{formatTime(ef.endTime)}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteEffectItem(ef.id)}
-                          aria-label="Delete weather effect"
-                          className="p-0.5 rounded text-zinc-500 hover:text-red-400"
-                        >
-                          <Trash2 className="w-3 h-3" aria-hidden="true" />
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onSelectEffectItem(ef.id)}
+                        className="flex-1 text-left truncate"
+                      >
+                        {ef.icon} {ef.name} · {Math.round(ef.intensity * 100)}%
+                      </button>
+                      <span className="text-[10px] font-mono tabular-nums text-zinc-400 shrink-0">
+                        {formatTime(ef.startTime)}–{formatTime(ef.endTime)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteEffectItem(ef.id)}
+                        aria-label={`Remove ${ef.name}`}
+                        className="p-0.5 rounded text-zinc-500 hover:text-red-400"
+                      >
+                        <Trash2 className="w-3 h-3" aria-hidden="true" />
+                      </button>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === 'filters' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-zinc-100">
-                Filters &amp; Color Grading
-              </h2>
+              <div>
+                <h2 className="text-xs font-semibold text-zinc-100">
+                  Filters &amp; Color Grading
+                </h2>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Click any look to insert a 4s block on Effects track
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={onResetFilters}
-                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100"
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100 shrink-0"
               >
                 <RotateCcw className="w-3 h-3" aria-hidden="true" />
                 <span>Reset</span>
@@ -822,19 +940,31 @@ export function RightEditorPanel({
 
             <div className="grid grid-cols-2 gap-1.5">
               {FILTER_PRESETS.map((preset) => {
-                const active = filters.preset === preset.id;
+                const isOriginal = preset.id === 'none';
+                const active = isOriginal
+                  ? filters.preset === 'none'
+                  : selectedEffect?.type === preset.id;
+                const entry = !isOriginal
+                  ? getEffectCatalogEntry(preset.id as TimelineEffectType)
+                  : null;
                 return (
                   <button
                     key={preset.id}
                     type="button"
-                    onClick={() => onApplyFilterPreset(preset.id)}
+                    onClick={() => {
+                      if (isOriginal) {
+                        onApplyFilterPreset('none');
+                      } else {
+                        onAddTimelineEffect(preset.id as TimelineEffectType);
+                      }
+                    }}
                     className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors truncate ${
                       active
-                        ? 'border-blue-500 bg-blue-500/15 text-blue-200'
-                        : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                        ? 'border-fuchsia-400 bg-fuchsia-500/20 text-fuchsia-100'
+                        : 'border-zinc-800 bg-[#0D1015] text-zinc-200 hover:border-fuchsia-500/50 hover:bg-fuchsia-500/10'
                     }`}
                   >
-                    {preset.label}
+                    {entry ? `${entry.icon} ${preset.label}` : preset.label}
                   </button>
                 );
               })}
@@ -1379,6 +1509,55 @@ export function RightEditorPanel({
               </div>
             </div>
 
+            {/* Official JIT Logo Watermark */}
+            <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-white p-0.5 border border-zinc-700 shrink-0 flex items-center justify-center">
+                  <img
+                    src={JIT_LOGO_URL}
+                    alt="JIT Logo"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-xs font-semibold text-zinc-100">
+                    JIT Brand Watermark
+                  </h3>
+                  <p className="text-[10px] text-zinc-400 truncate">
+                    Place on any corner or drag freely
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1">
+                {(
+                  Object.keys(WATERMARK_CORNER_POSITIONS) as WatermarkCorner[]
+                ).map((corner) => (
+                  <button
+                    key={corner}
+                    type="button"
+                    onClick={() => setWatermarkCorner(corner)}
+                    className={`py-1 px-2 rounded border text-[10px] font-medium transition-colors ${
+                      watermarkCorner === corner
+                        ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+                        : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    {WATERMARK_CORNER_POSITIONS[corner].label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => onAddJitLogoWatermark(watermarkCorner)}
+                className="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-[11px] font-semibold text-white inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Add JIT Logo Watermark</span>
+              </button>
+            </div>
+
             {/* Stickers & Masks */}
             <div className="pt-3 border-t border-zinc-800/80 space-y-2.5">
               <div>
@@ -1410,13 +1589,17 @@ export function RightEditorPanel({
                 ))}
               </div>
 
-              {overlayLayers.some((l) => l.kind === 'sticker') && (
+              {overlayLayers.some(
+                (l) => l.kind === 'sticker' || l.assetId === 'jit-watermark'
+              ) && (
                 <div className="space-y-1 pt-2 border-t border-zinc-800/70 max-h-32 overflow-y-auto">
                   <span className="block text-[10px] font-medium text-zinc-400">
-                    Placed Stickers
+                    Placed Stickers &amp; Watermarks
                   </span>
                   {overlayLayers
-                    .filter((l) => l.kind === 'sticker')
+                    .filter(
+                      (l) => l.kind === 'sticker' || l.assetId === 'jit-watermark'
+                    )
                     .map((st) => (
                       <div
                         key={st.id}

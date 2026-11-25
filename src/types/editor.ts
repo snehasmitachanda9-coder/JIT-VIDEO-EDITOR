@@ -23,11 +23,32 @@ export type RightPanelTab =
 
 export type WeatherEffectType = 'rain' | 'snow' | 'smoke';
 
+export type TimelineEffectType =
+  | 'rain'
+  | 'snow'
+  | 'smoke'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'camera-shake'
+  | 'glitch'
+  | 'teal-orange'
+  | 'cyberpunk'
+  | 'noir'
+  | 'warm-sunset'
+  | 'cinematic'
+  | 'vintage'
+  | 'bw'
+  | 'warm';
+
+export type TimelineEffectCategory = 'weather' | 'motion' | 'filter';
+
 export interface TimelineEffectItem {
   id: string;
-  type: WeatherEffectType;
+  type: TimelineEffectType;
+  category: TimelineEffectCategory;
   name: string;
-  intensity: number; // 0.2..1.0
+  icon: string;
+  intensity: number; // 0.1..1.0
   opacity: number; // 0.1..1.0
   startTime: number;
   endTime: number;

@@ -808,7 +808,7 @@ export function TimelinePanel({
                 )}
               </div>
 
-              {/* Track 2: Weather / Atmospheric Effects */}
+              {/* Track 2: Weather, Motion, Glitch & Color Effects */}
               <div
                 className="border-b border-zinc-800/60 relative flex items-center"
                 onPointerDown={(e) => {
@@ -820,20 +820,43 @@ export function TimelinePanel({
               >
                 {effectItems.length === 0 ? (
                   <span className="px-3 text-[10px] text-zinc-600 pointer-events-none">
-                    Apply Rain, Snow, or Smoke from Effects tab
+                    Click any Effect (Rain, Snow, Zoom, Shake, Glitch, Color) to add at playhead
                   </span>
                 ) : (
                   effectItems.map((ef) => {
                     const dur = Math.max(0.25, ef.endTime - ef.startTime);
                     const leftPx = ef.startTime * pxPerSecond;
-                    const widthPx = Math.max(24, dur * pxPerSecond);
+                    const widthPx = Math.max(32, dur * pxPerSecond);
                     const isSelected =
                       selectedItem?.track === 'effect' &&
                       selectedItem.id === ef.id;
+                    const intensityPct = Math.round(ef.intensity * 100);
+                    const fullLabel = `${ef.icon} ${ef.name} • ${intensityPct}% (${formatTime(ef.startTime)} - ${formatTime(ef.endTime)})`;
+
+                    const styleByCategory =
+                      ef.category === 'motion'
+                        ? isSelected
+                          ? 'border-cyan-300 bg-cyan-500/35 ring-1 ring-cyan-300/80 text-cyan-50'
+                          : 'border-cyan-400/70 bg-cyan-600/30 hover:border-cyan-300 text-cyan-100'
+                        : ef.category === 'filter'
+                          ? isSelected
+                            ? 'border-fuchsia-300 bg-fuchsia-500/35 ring-1 ring-fuchsia-300/80 text-fuchsia-50'
+                            : 'border-fuchsia-400/70 bg-fuchsia-600/30 hover:border-fuchsia-300 text-fuchsia-100'
+                          : isSelected
+                            ? 'border-violet-300 bg-violet-500/40 ring-1 ring-violet-300/80 text-white'
+                            : 'border-violet-400/70 bg-violet-600/35 hover:border-violet-300 text-violet-100';
+
+                    const handleColor =
+                      ef.category === 'motion'
+                        ? 'bg-cyan-400/60 hover:bg-cyan-300'
+                        : ef.category === 'filter'
+                          ? 'bg-fuchsia-400/60 hover:bg-fuchsia-300'
+                          : 'bg-violet-400/60 hover:bg-violet-300';
 
                     return (
                       <div
                         key={ef.id}
+                        title={fullLabel}
                         style={{left: leftPx, width: widthPx}}
                         onPointerDown={(e) => {
                           e.stopPropagation();
@@ -851,11 +874,7 @@ export function TimelinePanel({
                             ) as HTMLElement | null
                           )?.setPointerCapture(e.pointerId);
                         }}
-                        className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center cursor-grab active:cursor-grabbing transition-colors ${
-                          isSelected
-                            ? 'border-violet-400 bg-violet-500/25 ring-1 ring-violet-400/60'
-                            : 'border-violet-500/40 bg-violet-950/35 hover:border-violet-400/70'
-                        }`}
+                        className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center cursor-grab active:cursor-grabbing transition-colors shadow-sm ${styleByCategory}`}
                       >
                         <div
                           onPointerDown={(e) => {
@@ -874,17 +893,14 @@ export function TimelinePanel({
                               ) as HTMLElement | null
                             )?.setPointerCapture(e.pointerId);
                           }}
-                          className="w-2 h-full shrink-0 bg-violet-500/40 hover:bg-violet-400 cursor-ew-resize flex items-center justify-center"
+                          className={`w-2.5 h-full shrink-0 cursor-ew-resize flex items-center justify-center ${handleColor}`}
                         >
-                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                          <div className="w-0.5 h-3 bg-white/90 rounded-full" />
                         </div>
 
-                        <div className="flex-1 min-w-0 px-1.5 flex items-center justify-between gap-1.5">
-                          <span className="text-[10px] font-medium text-violet-100 truncate">
-                            {ef.name}
-                          </span>
-                          <span className="text-[9px] font-mono tabular-nums text-violet-200/80 shrink-0">
-                            {dur.toFixed(1)}s
+                        <div className="flex-1 min-w-0 px-1.5 flex items-center justify-between gap-1">
+                          <span className="text-[10px] font-semibold truncate">
+                            {fullLabel}
                           </span>
                         </div>
 
@@ -905,9 +921,9 @@ export function TimelinePanel({
                               ) as HTMLElement | null
                             )?.setPointerCapture(e.pointerId);
                           }}
-                          className="w-2 h-full shrink-0 bg-violet-500/40 hover:bg-violet-400 cursor-ew-resize flex items-center justify-center"
+                          className={`w-2.5 h-full shrink-0 cursor-ew-resize flex items-center justify-center ${handleColor}`}
                         >
-                          <div className="w-0.5 h-2.5 bg-white/80 rounded-full" />
+                          <div className="w-0.5 h-3 bg-white/90 rounded-full" />
                         </div>
                       </div>
                     );

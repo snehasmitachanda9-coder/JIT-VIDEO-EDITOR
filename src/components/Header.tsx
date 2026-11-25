@@ -1,4 +1,5 @@
 import {Download} from 'lucide-react';
+import {JIT_LOGO_URL} from '../utils/effectCatalog';
 
 interface HeaderProps {
   canExport: boolean;
@@ -15,9 +16,18 @@ export function Header({
 
   return (
     <header className="h-14 shrink-0 border-b border-zinc-800/80 bg-[#12151B] px-5 flex items-center justify-between gap-8">
-      <h1 className="text-base font-semibold tracking-tight text-zinc-100 whitespace-nowrap shrink-0">
-        JIT Video Editor
-      </h1>
+      <div className="flex items-center gap-2.5 shrink-0">
+        <div className="w-8 h-8 rounded-lg bg-white p-0.5 border border-zinc-700/70 shadow-sm overflow-hidden flex items-center justify-center shrink-0">
+          <img
+            src={JIT_LOGO_URL}
+            alt="JIT - Jharna Institute of Technology"
+            className="w-full h-full object-contain"
+          />
+        </div>
+        <h1 className="text-base font-semibold tracking-tight text-zinc-100 whitespace-nowrap">
+          JIT Video Editor
+        </h1>
+      </div>
 
       <button
         type="button"
