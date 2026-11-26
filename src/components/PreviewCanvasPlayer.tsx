@@ -20,6 +20,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import type {ViewportLayoutMode} from '../hooks/useViewportMode';
 import type {
   AspectRatioPreset,
   AudioSettings,
@@ -72,6 +73,7 @@ interface PreviewCanvasPlayerProps {
   totalDuration: number;
   isPlaying: boolean;
   isFullPreview: boolean;
+  layoutMode?: ViewportLayoutMode;
   onToggleFullPreview: () => void;
   onAspectRatioChange: (ratio: AspectRatioPreset) => void;
   onFitModeChange: (mode: VideoFitMode) => void;
@@ -138,6 +140,7 @@ export function PreviewCanvasPlayer({
   totalDuration,
   isPlaying,
   isFullPreview,
+  layoutMode = 'desktop',
   onToggleFullPreview,
   onAspectRatioChange,
   onFitModeChange,
@@ -218,9 +221,9 @@ export function PreviewCanvasPlayer({
     if (!el) return;
     const updateSize = () => {
       const rect = el.getBoundingClientRect();
-      const pad = 16;
-      const availW = Math.max(160, rect.width - pad);
-      const availH = Math.max(140, rect.height - pad);
+      const pad = layoutMode === 'desktop' ? 16 : 6;
+      const availW = Math.max(120, rect.width - pad);
+      const availH = Math.max(72, rect.height - pad);
       const ratio = targetDims.width / targetDims.height;
 
       let w = availW;
@@ -246,7 +249,7 @@ export function PreviewCanvasPlayer({
       observer.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [targetDims.width, targetDims.height, isFullPreview]);
+  }, [targetDims.width, targetDims.height, isFullPreview, layoutMode]);
 
   // Preload freeze-frame HTMLImageElements
   useEffect(() => {
@@ -1226,17 +1229,23 @@ export function PreviewCanvasPlayer({
       ? Math.min(100, Math.max(0, (currentTime / totalDuration) * 100))
       : 0;
 
+  const isMobile = layoutMode !== 'desktop';
+
   return (
     <section
       aria-label="Preview Player"
       className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#090B0E]"
     >
       {/* Top Aspect Ratio Switcher + Full Preview Bar */}
-      <div className="h-10 shrink-0 border-b border-zinc-800/80 bg-[#101319] px-3 flex items-center justify-between gap-2">
+      <div
+        className={`shrink-0 border-b border-zinc-800/80 bg-[#101319] flex items-center justify-between gap-1.5 overflow-x-auto no-scrollbar ${
+          isMobile ? 'h-8 px-2' : 'h-10 px-3 gap-2'
+        }`}
+      >
         <div
           role="group"
           aria-label="Aspect Ratio"
-          className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#090B0E] border border-zinc-800/80"
+          className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#090B0E] border border-zinc-800/80 shrink-0"
         >
           {ASPECT_OPTIONS.map((opt) => {
             const active = aspectRatio === opt.value;
@@ -1246,7 +1255,11 @@ export function PreviewCanvasPlayer({
                 type="button"
                 onClick={() => onAspectRatioChange(opt.value)}
                 aria-pressed={active}
-                className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                className={`rounded-md font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  isMobile
+                    ? 'px-1.5 py-0.5 text-[10px]'
+                    : 'px-2 py-1 text-[11px]'
+                } ${
                   active
                     ? 'bg-blue-600 text-white'
                     : 'text-zinc-400 hover:text-zinc-100'
@@ -1265,18 +1278,22 @@ export function PreviewCanvasPlayer({
           })}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <div
             role="group"
             aria-label="Video Scaling"
-            className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#090B0E] border border-zinc-800/80"
+            className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#090B0E] border border-zinc-800/80 shrink-0"
           >
             <button
               type="button"
               onClick={() => onFitModeChange('contain')}
               aria-pressed={fitMode === 'contain'}
               title="Fit: Letterbox inside frame without cropping"
-              className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
+              className={`rounded-md font-medium transition-colors whitespace-nowrap ${
+                isMobile
+                  ? 'px-1.5 py-0.5 text-[10px]'
+                  : 'px-2 py-1 text-[11px]'
+              } ${
                 fitMode === 'contain'
                   ? 'bg-blue-600 text-white'
                   : 'text-zinc-400 hover:text-zinc-100'
@@ -1289,7 +1306,11 @@ export function PreviewCanvasPlayer({
               onClick={() => onFitModeChange('cover')}
               aria-pressed={fitMode === 'cover'}
               title="Fill: Crop to cover entire frame"
-              className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
+              className={`rounded-md font-medium transition-colors whitespace-nowrap ${
+                isMobile
+                  ? 'px-1.5 py-0.5 text-[10px]'
+                  : 'px-2 py-1 text-[11px]'
+              } ${
                 fitMode === 'cover'
                   ? 'bg-blue-600 text-white'
                   : 'text-zinc-400 hover:text-zinc-100'
@@ -1311,7 +1332,11 @@ export function PreviewCanvasPlayer({
                 ? 'Exit Full Preview (Esc)'
                 : 'Expand to Full Preview'
             }
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-medium transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded-md border font-medium transition-colors whitespace-nowrap shrink-0 ${
+              isMobile
+                ? 'px-1.5 py-0.5 text-[10px]'
+                : 'px-2.5 py-1 text-[11px] gap-1.5'
+            } ${
               isFullPreview
                 ? 'border-blue-500/60 bg-blue-600/20 text-blue-200'
                 : 'border-zinc-700/80 bg-[#090B0E] text-zinc-300 hover:text-white hover:border-zinc-600'
@@ -1320,12 +1345,12 @@ export function PreviewCanvasPlayer({
             {isFullPreview ? (
               <>
                 <Minimize2 className="w-3 h-3" aria-hidden="true" />
-                <span>Exit Full Preview</span>
+                <span>{isMobile ? 'Exit' : 'Exit Full Preview'}</span>
               </>
             ) : (
               <>
                 <Maximize2 className="w-3 h-3" aria-hidden="true" />
-                <span>Full Preview</span>
+                <span>{isMobile ? 'Expand' : 'Full Preview'}</span>
               </>
             )}
           </button>
@@ -1335,7 +1360,9 @@ export function PreviewCanvasPlayer({
       {/* Live HTML5 Canvas Stage */}
       <div
         ref={stageRef}
-        className="flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden relative"
+        className={`flex-1 min-h-0 flex items-center justify-center overflow-hidden relative ${
+          isMobile ? 'p-1' : 'p-2'
+        }`}
       >
         <video
           ref={videoRefA}
@@ -1370,21 +1397,36 @@ export function PreviewCanvasPlayer({
         overlayLayers.length === 0 &&
         textOverlays.length === 0 &&
         effectItems.length === 0 ? (
-          <div className="max-w-sm w-full rounded-xl border border-zinc-800/80 bg-[#12151B]/95 px-6 py-7 text-center">
-            <div className="mx-auto w-10 h-10 rounded-lg bg-zinc-800/80 border border-zinc-700/60 flex items-center justify-center text-zinc-300 mb-3.5">
-              <Film className="w-5 h-5" aria-hidden="true" />
-            </div>
-            <h2 className="text-sm font-semibold text-zinc-100">
+          <div
+            className={`max-w-sm w-full rounded-xl border border-zinc-800/80 bg-[#12151B]/95 text-center ${
+              isMobile ? 'px-4 py-3' : 'px-6 py-7'
+            }`}
+          >
+            {!isMobile && (
+              <div className="mx-auto w-10 h-10 rounded-lg bg-zinc-800/80 border border-zinc-700/60 flex items-center justify-center text-zinc-300 mb-3.5">
+                <Film className="w-5 h-5" aria-hidden="true" />
+              </div>
+            )}
+            <h2
+              className={`font-semibold text-zinc-100 ${
+                isMobile ? 'text-xs' : 'text-sm'
+              }`}
+            >
               Timeline is empty
             </h2>
-            <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
-              Upload MP4/WebM videos or PNG/JPG/WebP images in the Media Upload
-              panel to get started.
+            <p
+              className={`text-zinc-400 leading-snug ${
+                isMobile ? 'mt-1 text-[11px]' : 'mt-1.5 text-xs leading-relaxed'
+              }`}
+            >
+              Upload MP4/WebM videos or PNG/JPG/WebP images to start editing.
             </p>
             <button
               type="button"
               onClick={onOpenUpload}
-              className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white transition-colors"
+              className={`inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white transition-colors ${
+                isMobile ? 'mt-2.5 px-3 py-1.5' : 'mt-4 px-4 py-2 gap-2'
+              }`}
             >
               <Upload className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Upload Media</span>
@@ -1412,8 +1454,8 @@ export function PreviewCanvasPlayer({
         )}
       </div>
 
-      {/* Selected Overlay / PIP Properties Bar */}
-      {selectedOverlay && !isFullPreview && (
+      {/* Selected Overlay / PIP Properties Bar (Desktop only; mobile edits via Stickers/Overlay tab) */}
+      {selectedOverlay && !isFullPreview && !isMobile && (
         <div className="shrink-0 border-t border-zinc-800/80 bg-[#10141B] px-3 py-1.5 flex flex-wrap items-center justify-between gap-3 text-[11px]">
           <div className="flex items-center gap-2 min-w-0">
             <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />
@@ -1524,7 +1566,11 @@ export function PreviewCanvasPlayer({
       )}
 
       {/* Transport Controls */}
-      <div className="shrink-0 border-t border-zinc-800/80 bg-[#12151B] px-4 py-2 flex items-center gap-3">
+      <div
+        className={`shrink-0 border-t border-zinc-800/80 bg-[#12151B] flex items-center ${
+          isMobile ? 'px-2.5 py-1.5 gap-2' : 'px-4 py-2 gap-3'
+        }`}
+      >
         <button
           type="button"
           onClick={() => {

@@ -15,6 +15,7 @@ import {formatFileSize, formatTime} from '../utils/formatTime';
 interface MediaSidebarProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  embedded?: boolean;
   assets: MediaAsset[];
   errorMessage: string | null;
   onUploadFiles: (files: FileList | File[]) => void;
@@ -27,6 +28,7 @@ interface MediaSidebarProps {
 export function MediaSidebar({
   isCollapsed,
   onToggleCollapse,
+  embedded = false,
   assets,
   errorMessage,
   onUploadFiles,
@@ -69,7 +71,7 @@ export function MediaSidebar({
     }
   };
 
-  if (isCollapsed) {
+  if (!embedded && isCollapsed) {
     return (
       <aside
         aria-label="Media Upload (collapsed)"
@@ -100,32 +102,38 @@ export function MediaSidebar({
   return (
     <aside
       aria-label="Media Upload"
-      className="w-56 lg:w-60 shrink-0 border-r border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0"
+      className={
+        embedded
+          ? 'w-full flex-1 min-h-0 bg-[#12151B] flex flex-col'
+          : 'w-56 lg:w-60 shrink-0 border-r border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0'
+      }
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="px-3 py-2.5 border-b border-zinc-800/70 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <h2 className="text-xs font-semibold text-zinc-100 whitespace-nowrap">
-            Media Upload
-          </h2>
-          <span className="text-[11px] text-zinc-400 font-mono tabular-nums whitespace-nowrap">
-            ({assets.length})
-          </span>
-        </div>
+      {!embedded && (
+        <div className="px-3 py-2.5 border-b border-zinc-800/70 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-xs font-semibold text-zinc-100 whitespace-nowrap">
+              Media Upload
+            </h2>
+            <span className="text-[11px] text-zinc-400 font-mono tabular-nums whitespace-nowrap">
+              ({assets.length})
+            </span>
+          </div>
 
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Collapse Media Upload panel"
-          aria-label="Collapse Media Upload panel"
-          className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors shrink-0"
-        >
-          <PanelLeftClose className="w-4 h-4" aria-hidden="true" />
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Collapse Media Upload panel"
+            aria-label="Collapse Media Upload panel"
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors shrink-0"
+          >
+            <PanelLeftClose className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       <div className="p-3 border-b border-zinc-800/70">
         <button
@@ -236,7 +244,7 @@ export function MediaSidebar({
                       type="button"
                       onClick={() => onRemoveAsset(asset.id)}
                       aria-label={`Remove ${asset.name}`}
-                      className="p-1 rounded text-zinc-500 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-300 hover:bg-zinc-800 transition-opacity"
+                      className="p-1 rounded text-zinc-400 sm:text-zinc-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 hover:text-red-300 hover:bg-zinc-800 transition-opacity"
                     >
                       <Trash2 className="w-3 h-3" aria-hidden="true" />
                     </button>

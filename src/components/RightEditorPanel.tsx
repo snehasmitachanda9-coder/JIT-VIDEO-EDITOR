@@ -76,6 +76,8 @@ import {STICKER_CATALOG} from '../utils/stickerRenderer';
 interface RightEditorPanelProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  embedded?: boolean;
+  hideTabBar?: boolean;
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
   onCloseEffectInspector: () => void;
@@ -201,6 +203,8 @@ const WEATHER_OPTIONS: Array<{
 export function RightEditorPanel({
   isCollapsed,
   onToggleCollapse,
+  embedded = false,
+  hideTabBar = false,
   activeTab,
   onTabChange,
   onCloseEffectInspector,
@@ -416,7 +420,7 @@ export function RightEditorPanel({
     {id: 'ai', label: 'AI Studio', shortLabel: 'AI', icon: Sparkles},
   ];
 
-  if (isCollapsed) {
+  if (!embedded && isCollapsed) {
     return (
       <aside
         aria-label="Editing Inspector (collapsed)"
@@ -464,56 +468,68 @@ export function RightEditorPanel({
   return (
     <aside
       aria-label="Editing Inspector"
-      className="w-72 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0"
+      className={
+        embedded
+          ? 'w-full flex-1 min-h-0 bg-[#12151B] flex flex-col'
+          : 'w-72 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0'
+      }
     >
       {/* Inspector Header */}
-      <div className="px-3 py-2 border-b border-zinc-800/70 flex items-center justify-between gap-2 bg-[#101319]">
-        <span className="text-xs font-semibold text-zinc-200 whitespace-nowrap">
-          {tabs.find((t) => t.id === activeTab)?.label ?? 'Tools'}
-        </span>
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Collapse Editing Panel"
-          aria-label="Collapse Editing Panel"
-          className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
-        >
-          <PanelRightClose className="w-4 h-4" aria-hidden="true" />
-        </button>
-      </div>
+      {!embedded && (
+        <div className="px-3 py-2 border-b border-zinc-800/70 flex items-center justify-between gap-2 bg-[#101319]">
+          <span className="text-xs font-semibold text-zinc-200 whitespace-nowrap">
+            {tabs.find((t) => t.id === activeTab)?.label ?? 'Tools'}
+          </span>
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Collapse Editing Panel"
+            aria-label="Collapse Editing Panel"
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+          >
+            <PanelRightClose className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       {/* 7-Tab Bar */}
-      <div
-        role="tablist"
-        aria-label="Editing Tools"
-        className="shrink-0 grid grid-cols-7 border-b border-zinc-800/80 bg-[#0E1116]"
-      >
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              title={tab.label}
-              aria-selected={active}
-              onClick={() => onTabChange(tab.id)}
-              className={`py-2 px-0.5 flex flex-col items-center justify-center gap-1 text-[10px] font-medium border-b-2 transition-colors whitespace-nowrap ${
-                active
-                  ? 'border-blue-500 text-zinc-100 bg-[#12151B]'
-                  : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-              <span className="truncate max-w-full">{tab.shortLabel}</span>
-            </button>
-          );
-        })}
-      </div>
+      {!hideTabBar && (
+        <div
+          role="tablist"
+          aria-label="Editing Tools"
+          className="shrink-0 grid grid-cols-7 border-b border-zinc-800/80 bg-[#0E1116]"
+        >
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                title={tab.label}
+                aria-selected={active}
+                onClick={() => onTabChange(tab.id)}
+                className={`py-2 px-0.5 flex flex-col items-center justify-center gap-1 text-[10px] font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  active
+                    ? 'border-blue-500 text-zinc-100 bg-[#12151B]'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="truncate max-w-full">{tab.shortLabel}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Tab Body */}
-      <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
+      <div
+        className={`flex-1 overflow-y-auto space-y-4 ${
+          embedded ? 'p-3' : 'p-3.5'
+        }`}
+      >
         {/* Dedicated Active Effect Inspector Box (shown whenever an Effect block is added or selected) */}
         {selectedEffect && (
           <div className="rounded-xl border border-violet-500/50 bg-[#151923] p-3 space-y-3 shadow-lg">

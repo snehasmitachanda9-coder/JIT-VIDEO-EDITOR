@@ -6,12 +6,24 @@ import {
   useState,
   type ChangeEvent,
 } from 'react';
+import {
+  Eraser,
+  Film,
+  Move,
+  Music,
+  Sliders,
+  Smile,
+  Sparkles,
+  Type as TypeIcon,
+  X,
+} from 'lucide-react';
 import {ExportModal} from './components/ExportModal';
 import {Header} from './components/Header';
 import {MediaSidebar} from './components/MediaSidebar';
 import {PreviewCanvasPlayer} from './components/PreviewCanvasPlayer';
 import {RightEditorPanel} from './components/RightEditorPanel';
 import {TimelinePanel} from './components/TimelinePanel';
+import {useViewportMode} from './hooks/useViewportMode';
 import {
   DEFAULT_AUDIO_EFFECTS,
   DEFAULT_BG_REMOVAL,
@@ -203,9 +215,17 @@ function isStructuralHistoryChange(
 
 export default function App() {
   // Responsive Layout & Collapse State
+  const layoutMode = useViewportMode();
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [isFullPreview, setIsFullPreview] = useState(false);
+  const [isDocFullscreen, setIsDocFullscreen] = useState(false);
+  const [mobileBottomTab, setMobileBottomTab] = useState<'media' | RightPanelTab>(
+    'media'
+  );
+  const [landscapeDrawer, setLandscapeDrawer] = useState<
+    'none' | 'media' | 'tools'
+  >('none');
 
   // Media Libraries
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
@@ -484,7 +504,74 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const syncFullscreen = () => {
+      const doc = document as Document & {
+        webkitFullscreenElement?: Element | null;
+      };
+      setIsDocFullscreen(
+        Boolean(document.fullscreenElement || doc.webkitFullscreenElement)
+      );
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreen);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (layoutMode !== 'mobile-landscape' && landscapeDrawer !== 'none') {
+      setLandscapeDrawer('none');
+    }
+  }, [layoutMode, landscapeDrawer]);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    const rootEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+
+    try {
+      if (document.fullscreenElement || doc.webkitFullscreenElement) {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (doc.webkitExitFullscreen) {
+          await doc.webkitExitFullscreen();
+        }
+        return;
+      }
+
+      if (rootEl.requestFullscreen) {
+        await rootEl.requestFullscreen();
+        return;
+      }
+      if (rootEl.webkitRequestFullscreen) {
+        await rootEl.webkitRequestFullscreen();
+        return;
+      }
+    } catch {
+      // Fallback for iOS Safari / restricted iframes where Fullscreen API is unavailable
+    }
+    setIsFullPreview((f) => !f);
+  }, []);
+
+  const handleToggleLandscapeDrawer = useCallback(
+    (drawer: 'media' | 'tools') => {
+      setLandscapeDrawer((prev) => (prev === drawer ? 'none' : drawer));
+    },
+    []
+  );
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && landscapeDrawer !== 'none') {
+        setLandscapeDrawer('none');
+        return;
+      }
       if (e.key === 'Escape' && isFullPreview) {
         setIsFullPreview(false);
         return;
@@ -592,6 +679,7 @@ export default function App() {
 
   const handleTabChange = useCallback((tab: RightPanelTab) => {
     setActiveRightTab(tab);
+    setMobileBottomTab(tab);
     setSelectedItem((prev) => (prev?.track === 'effect' ? null : prev));
   }, []);
 
@@ -926,11 +1014,19 @@ export default function App() {
     [selectedItem, bgTargetKey]
   );
 
-  const handleOpenBgRemoveForOverlay = useCallback((id: string) => {
-    setBgTargetKey(id);
-    setActiveRightTab('bg-remove');
-    setRightCollapsed(false);
-  }, []);
+  const handleOpenBgRemoveForOverlay = useCallback(
+    (id: string) => {
+      setBgTargetKey(id);
+      setActiveRightTab('bg-remove');
+      setRightCollapsed(false);
+      if (layoutMode === 'mobile-portrait') {
+        setMobileBottomTab('bg-remove');
+      } else if (layoutMode === 'mobile-landscape') {
+        setLandscapeDrawer('tools');
+      }
+    },
+    [layoutMode]
+  );
 
   // Background Removal Updates
   const handleUpdateMainBgRemoval = useCallback(
@@ -1100,9 +1196,15 @@ export default function App() {
     [currentTime]
   );
 
-  const handleSelectEffectItem = useCallback((id: string) => {
-    setSelectedItem({track: 'effect', id});
-  }, []);
+  const handleSelectEffectItem = useCallback(
+    (id: string) => {
+      setSelectedItem({track: 'effect', id});
+      if (layoutMode === 'mobile-portrait') {
+        setMobileBottomTab((prev) => (prev === 'filters' ? prev : 'motion'));
+      }
+    },
+    [layoutMode]
+  );
 
   const handleUpdateEffectItem = useCallback(
     (id: string, patch: Partial<TimelineEffectItem>) => {
@@ -1243,12 +1345,21 @@ export default function App() {
     setTextOverlays((prev) => [...prev, item]);
     setSelectedItem({track: 'text', id: item.id});
     setActiveRightTab('text');
-  }, [currentTime, totalDuration]);
+    if (layoutMode === 'mobile-portrait') {
+      setMobileBottomTab('text');
+    }
+  }, [currentTime, totalDuration, layoutMode]);
 
-  const handleSelectTextOverlay = useCallback((id: string) => {
-    setSelectedItem({track: 'text', id});
-    setActiveRightTab('text');
-  }, []);
+  const handleSelectTextOverlay = useCallback(
+    (id: string) => {
+      setSelectedItem({track: 'text', id});
+      setActiveRightTab('text');
+      if (layoutMode === 'mobile-portrait') {
+        setMobileBottomTab('text');
+      }
+    },
+    [layoutMode]
+  );
 
   const handleMoveTextOverlay = useCallback(
     (id: string, x: number, y: number) => {
@@ -1685,12 +1796,234 @@ export default function App() {
     [videoClips]
   );
 
+  const mobileNavItems: Array<{
+    id: 'media' | RightPanelTab;
+    label: string;
+    icon: typeof Film;
+  }> = [
+    {id: 'media', label: 'Media', icon: Film},
+    {id: 'motion', label: 'Effects', icon: Move},
+    {id: 'filters', label: 'Color', icon: Sliders},
+    {id: 'bg-remove', label: 'BG Cut', icon: Eraser},
+    {id: 'stickers', label: 'Stickers', icon: Smile},
+    {id: 'text', label: 'Text', icon: TypeIcon},
+    {id: 'audio', label: 'Audio', icon: Music},
+    {id: 'ai', label: 'AI', icon: Sparkles},
+  ];
+
+  const handleSelectTimelineItem = useCallback(
+    (item: SelectedTimelineItem) => {
+      setSelectedItem(item);
+      if (item?.track === 'overlay') {
+        const target = overlayLayers.find((o) => o.id === item.id);
+        if (target && target.kind !== 'sticker') {
+          setBgTargetKey(item.id);
+        }
+      } else if (item?.track === 'video') {
+        setBgTargetKey('main');
+      } else if (item?.track === 'effect') {
+        setMobileBottomTab((prev) => (prev === 'filters' ? prev : 'motion'));
+      } else if (item?.track === 'text') {
+        setActiveRightTab('text');
+        if (layoutMode === 'mobile-portrait') {
+          setMobileBottomTab('text');
+        }
+      } else if (item?.track === 'audio') {
+        setActiveRightTab('audio');
+        if (layoutMode === 'mobile-portrait') {
+          setMobileBottomTab('audio');
+        }
+      }
+    },
+    [overlayLayers, layoutMode]
+  );
+
+  const previewNode = (
+    <PreviewCanvasPlayer
+      videoClips={videoClips}
+      effectItems={effectItems}
+      overlayLayers={overlayLayers}
+      audioClips={audioClips}
+      textOverlays={textOverlays}
+      selectedOverlayId={selectedOverlayId}
+      selectedTextId={selectedTextId}
+      aspectRatio={aspectRatio}
+      fitMode={fitMode}
+      filters={filters}
+      motionTransform={motionTransform}
+      mainBgRemoval={mainBgRemoval}
+      audioSettings={audioSettings}
+      beatTimes={beatTimes}
+      currentTime={currentTime}
+      totalDuration={totalDuration}
+      isPlaying={isPlaying}
+      isFullPreview={isFullPreview}
+      layoutMode={layoutMode}
+      onToggleFullPreview={() => setIsFullPreview((f) => !f)}
+      onAspectRatioChange={setAspectRatio}
+      onFitModeChange={setFitMode}
+      onTimeChange={setCurrentTime}
+      onPlayStateChange={setIsPlaying}
+      onSelectOverlay={handleSelectOverlay}
+      onUpdateOverlay={handleUpdateOverlay}
+      onDeleteOverlay={handleDeleteOverlay}
+      onOpenBgRemoveForOverlay={handleOpenBgRemoveForOverlay}
+      onSelectTextOverlay={handleSelectTextOverlay}
+      onMoveTextOverlay={handleMoveTextOverlay}
+      onOpenUpload={() => fileInputRef.current?.click()}
+      canvasRef={canvasRef}
+      captureRawFrameRef={captureRawFrameRef}
+    />
+  );
+
+  const timelineNode = (
+    <TimelinePanel
+      videoClips={videoClips}
+      effectItems={effectItems}
+      overlayLayers={overlayLayers}
+      audioClips={audioClips}
+      textOverlays={textOverlays}
+      selectedItem={selectedItem}
+      currentTime={currentTime}
+      totalDuration={totalDuration}
+      playbackSpeed={audioSettings.playbackSpeed}
+      beatTimes={beatTimes}
+      layoutMode={layoutMode}
+      canUndo={historyCounts.canUndo}
+      canRedo={historyCounts.canRedo}
+      onUndo={handleUndo}
+      onRedo={handleRedo}
+      onSelectItem={handleSelectTimelineItem}
+      onSeek={(time) => {
+        setIsPlaying(false);
+        setCurrentTime(time);
+      }}
+      onSplitSelected={handleSplitSelected}
+      onFreezeFrame={handleFreezeFrame}
+      onDeleteSelected={handleDeleteSelected}
+      onTrimVideoClip={handleTrimVideoClip}
+      onUpdateClipTransition={handleUpdateClipTransition}
+      onUpdateEffectItem={handleUpdateEffectItem}
+      onUpdateOverlay={handleUpdateOverlay}
+      onUpdateAudioClip={handleUpdateAudioClip}
+      onUpdateTextOverlay={handleUpdateTextOverlay}
+    />
+  );
+
+  const renderMediaSidebar = (embedded: boolean) => (
+    <MediaSidebar
+      isCollapsed={leftCollapsed}
+      onToggleCollapse={() => setLeftCollapsed((c) => !c)}
+      embedded={embedded}
+      assets={mediaAssets}
+      errorMessage={uploadError}
+      onUploadFiles={handleUploadMediaFiles}
+      onTriggerUpload={() => fileInputRef.current?.click()}
+      onAddVideoToTimeline={handleAddVideoToTimeline}
+      onAddOverlayToTimeline={handleAddOverlayToTimeline}
+      onRemoveAsset={handleRemoveAsset}
+    />
+  );
+
+  const renderRightEditorPanel = (
+    embedded: boolean,
+    hideTabBar: boolean,
+    tabOverride?: RightPanelTab
+  ) => (
+    <RightEditorPanel
+      isCollapsed={rightCollapsed}
+      onToggleCollapse={() => setRightCollapsed((c) => !c)}
+      embedded={embedded}
+      hideTabBar={hideTabBar}
+      activeTab={tabOverride ?? activeRightTab}
+      onTabChange={handleTabChange}
+      onCloseEffectInspector={handleCloseEffectInspector}
+      motionTransform={motionTransform}
+      onUpdateMotionTransform={handleUpdateMotionTransform}
+      onResetMotionTransform={handleResetMotionTransform}
+      videoClips={videoClips}
+      selectedVideoClipId={selectedVideoClipId}
+      onSelectVideoClip={(id) => setSelectedItem({track: 'video', id})}
+      onUpdateClipTransition={handleUpdateClipTransition}
+      effectItems={effectItems}
+      selectedEffect={selectedEffect}
+      onSelectEffectItem={handleSelectEffectItem}
+      onAddTimelineEffect={handleAddTimelineEffect}
+      onUpdateEffectItem={handleUpdateEffectItem}
+      onDeleteEffectItem={handleDeleteEffectItem}
+      filters={filters}
+      onUpdateFilters={handleUpdateFilters}
+      onApplyFilterPreset={handleApplyFilterPreset}
+      onResetFilters={handleResetFilters}
+      bgTargetKey={bgTargetKey}
+      onChangeBgTargetKey={setBgTargetKey}
+      mainBgRemoval={mainBgRemoval}
+      overlayLayers={overlayLayers}
+      mediaAssets={mediaAssets}
+      onUpdateMainBgRemoval={handleUpdateMainBgRemoval}
+      onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
+      onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
+      selectedOverlay={selectedOverlay}
+      onAddStickerOverlay={handleAddStickerOverlay}
+      onAddJitLogoWatermark={(corner) => {
+        void handleAddJitLogoWatermark(corner);
+      }}
+      onSelectOverlay={handleSelectOverlay}
+      onUpdateOverlay={handleUpdateOverlay}
+      onDeleteOverlay={handleDeleteOverlay}
+      textOverlays={textOverlays}
+      selectedTextId={selectedTextId}
+      totalDuration={totalDuration}
+      currentTime={currentTime}
+      onAddTextOverlay={handleAddTextOverlay}
+      onSelectTextOverlay={handleSelectTextOverlay}
+      onUpdateTextOverlay={handleUpdateTextOverlay}
+      onDeleteTextOverlay={handleDeleteTextOverlay}
+      audioAssets={audioAssets}
+      audioClips={audioClips}
+      audioSettings={audioSettings}
+      selectedAudioClip={selectedAudioClip}
+      beatSync={beatSync}
+      beatAnalyzing={beatAnalyzing}
+      beatError={beatError}
+      onAnalyzeBeats={(clipId) => {
+        void handleAnalyzeBeats(clipId);
+      }}
+      onClearBeats={handleClearBeats}
+      onSeek={(time) => {
+        setIsPlaying(false);
+        setCurrentTime(time);
+      }}
+      onUploadAudioFiles={handleUploadAudioFiles}
+      onAddAudioToTimeline={handleAddAudioToTimeline}
+      onUpdateAudioClip={handleUpdateAudioClip}
+      onAddBuiltInSfx={(kind) => {
+        void handleAddBuiltInSfx(kind);
+      }}
+      onUpdateAudioSettings={(patch) =>
+        setAudioSettings((prev) => ({...prev, ...patch}))
+      }
+      clipNames={clipNames}
+      aspectRatio={aspectRatio}
+      onCaptureFrameDataUrl={handleCaptureFrameDataUrl}
+      onAddAICaption={handleAddAICaption}
+      onAddAllAICaptions={handleAddAllAICaptions}
+    />
+  );
+
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#0B0D10] text-zinc-100 flex flex-col">
+    <div className="h-[100dvh] w-screen overflow-hidden bg-[#0B0D10] text-zinc-100 flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <Header
         canExport={videoClips.length > 0 || overlayLayers.length > 0}
         isExporting={isExporting}
         onExportClick={handleStartExport}
+        layoutMode={layoutMode}
+        isFullscreen={isDocFullscreen || isFullPreview}
+        onToggleFullscreen={() => {
+          void handleToggleFullscreen();
+        }}
+        landscapeDrawer={landscapeDrawer}
+        onToggleLandscapeDrawer={handleToggleLandscapeDrawer}
       />
 
       <input
@@ -1703,178 +2036,124 @@ export default function App() {
         aria-label="Upload MP4, WebM, PNG, JPG, or WebP files"
       />
 
-      <main className="flex-1 min-h-0 flex overflow-hidden">
-        {!isFullPreview && (
-          <MediaSidebar
-            isCollapsed={leftCollapsed}
-            onToggleCollapse={() => setLeftCollapsed((c) => !c)}
-            assets={mediaAssets}
-            errorMessage={uploadError}
-            onUploadFiles={handleUploadMediaFiles}
-            onTriggerUpload={() => fileInputRef.current?.click()}
-            onAddVideoToTimeline={handleAddVideoToTimeline}
-            onAddOverlayToTimeline={handleAddOverlayToTimeline}
-            onRemoveAsset={handleRemoveAsset}
-          />
-        )}
+      {isFullPreview ? (
+        <main className="flex-1 min-h-0 flex overflow-hidden">
+          {previewNode}
+        </main>
+      ) : layoutMode === 'mobile-portrait' ? (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Upper Preview Area (~38% height) */}
+          <div className="h-[38%] min-h-0 shrink-0 flex flex-col overflow-hidden">
+            {previewNode}
+          </div>
 
-        <PreviewCanvasPlayer
-          videoClips={videoClips}
-          effectItems={effectItems}
-          overlayLayers={overlayLayers}
-          audioClips={audioClips}
-          textOverlays={textOverlays}
-          selectedOverlayId={selectedOverlayId}
-          selectedTextId={selectedTextId}
-          aspectRatio={aspectRatio}
-          fitMode={fitMode}
-          filters={filters}
-          motionTransform={motionTransform}
-          mainBgRemoval={mainBgRemoval}
-          audioSettings={audioSettings}
-          beatTimes={beatTimes}
-          currentTime={currentTime}
-          totalDuration={totalDuration}
-          isPlaying={isPlaying}
-          isFullPreview={isFullPreview}
-          onToggleFullPreview={() => setIsFullPreview((f) => !f)}
-          onAspectRatioChange={setAspectRatio}
-          onFitModeChange={setFitMode}
-          onTimeChange={setCurrentTime}
-          onPlayStateChange={setIsPlaying}
-          onSelectOverlay={handleSelectOverlay}
-          onUpdateOverlay={handleUpdateOverlay}
-          onDeleteOverlay={handleDeleteOverlay}
-          onOpenBgRemoveForOverlay={handleOpenBgRemoveForOverlay}
-          onSelectTextOverlay={handleSelectTextOverlay}
-          onMoveTextOverlay={handleMoveTextOverlay}
-          onOpenUpload={() => fileInputRef.current?.click()}
-          canvasRef={canvasRef}
-          captureRawFrameRef={captureRawFrameRef}
-        />
+          {/* Middle Multi-Track Timeline (~30% height) */}
+          <div className="h-[30%] min-h-0 shrink-0 flex flex-col overflow-hidden">
+            {timelineNode}
+          </div>
 
-        {!isFullPreview && (
-          <RightEditorPanel
-            isCollapsed={rightCollapsed}
-            onToggleCollapse={() => setRightCollapsed((c) => !c)}
-            activeTab={activeRightTab}
-            onTabChange={handleTabChange}
-            onCloseEffectInspector={handleCloseEffectInspector}
-            motionTransform={motionTransform}
-            onUpdateMotionTransform={handleUpdateMotionTransform}
-            onResetMotionTransform={handleResetMotionTransform}
-            videoClips={videoClips}
-            selectedVideoClipId={selectedVideoClipId}
-            onSelectVideoClip={(id) => setSelectedItem({track: 'video', id})}
-            onUpdateClipTransition={handleUpdateClipTransition}
-            effectItems={effectItems}
-            selectedEffect={selectedEffect}
-            onSelectEffectItem={handleSelectEffectItem}
-            onAddTimelineEffect={handleAddTimelineEffect}
-            onUpdateEffectItem={handleUpdateEffectItem}
-            onDeleteEffectItem={handleDeleteEffectItem}
-            filters={filters}
-            onUpdateFilters={handleUpdateFilters}
-            onApplyFilterPreset={handleApplyFilterPreset}
-            onResetFilters={handleResetFilters}
-            bgTargetKey={bgTargetKey}
-            onChangeBgTargetKey={setBgTargetKey}
-            mainBgRemoval={mainBgRemoval}
-            overlayLayers={overlayLayers}
-            mediaAssets={mediaAssets}
-            onUpdateMainBgRemoval={handleUpdateMainBgRemoval}
-            onUpdateOverlayBgRemoval={handleUpdateOverlayBgRemoval}
-            onUploadBackgroundReplacement={handleUploadBackgroundReplacement}
-            selectedOverlay={selectedOverlay}
-            onAddStickerOverlay={handleAddStickerOverlay}
-            onAddJitLogoWatermark={(corner) => {
-              void handleAddJitLogoWatermark(corner);
-            }}
-            onSelectOverlay={handleSelectOverlay}
-            onUpdateOverlay={handleUpdateOverlay}
-            onDeleteOverlay={handleDeleteOverlay}
-            textOverlays={textOverlays}
-            selectedTextId={selectedTextId}
-            totalDuration={totalDuration}
-            currentTime={currentTime}
-            onAddTextOverlay={handleAddTextOverlay}
-            onSelectTextOverlay={handleSelectTextOverlay}
-            onUpdateTextOverlay={handleUpdateTextOverlay}
-            onDeleteTextOverlay={handleDeleteTextOverlay}
-            audioAssets={audioAssets}
-            audioClips={audioClips}
-            audioSettings={audioSettings}
-            selectedAudioClip={selectedAudioClip}
-            beatSync={beatSync}
-            beatAnalyzing={beatAnalyzing}
-            beatError={beatError}
-            onAnalyzeBeats={(clipId) => {
-              void handleAnalyzeBeats(clipId);
-            }}
-            onClearBeats={handleClearBeats}
-            onSeek={(time) => {
-              setIsPlaying(false);
-              setCurrentTime(time);
-            }}
-            onUploadAudioFiles={handleUploadAudioFiles}
-            onAddAudioToTimeline={handleAddAudioToTimeline}
-            onUpdateAudioClip={handleUpdateAudioClip}
-            onAddBuiltInSfx={(kind) => {
-              void handleAddBuiltInSfx(kind);
-            }}
-            onUpdateAudioSettings={(patch) =>
-              setAudioSettings((prev) => ({...prev, ...patch}))
-            }
-            clipNames={clipNames}
-            aspectRatio={aspectRatio}
-            onCaptureFrameDataUrl={handleCaptureFrameDataUrl}
-            onAddAICaption={handleAddAICaption}
-            onAddAllAICaptions={handleAddAllAICaptions}
-          />
-        )}
-      </main>
+          {/* Bottom Tool Drawer + Scrollable Icon Bar (~32% height) */}
+          <div className="h-[32%] min-h-0 shrink-0 flex flex-col border-t border-zinc-800/80 bg-[#12151B] overflow-hidden">
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              {mobileBottomTab === 'media'
+                ? renderMediaSidebar(true)
+                : renderRightEditorPanel(true, true, mobileBottomTab)}
+            </div>
 
-      {!isFullPreview && (
-        <TimelinePanel
-          videoClips={videoClips}
-          effectItems={effectItems}
-          overlayLayers={overlayLayers}
-          audioClips={audioClips}
-          textOverlays={textOverlays}
-          selectedItem={selectedItem}
-          currentTime={currentTime}
-          totalDuration={totalDuration}
-          playbackSpeed={audioSettings.playbackSpeed}
-          beatTimes={beatTimes}
-          canUndo={historyCounts.canUndo}
-          canRedo={historyCounts.canRedo}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onSelectItem={(item) => {
-            setSelectedItem(item);
-            if (item?.track === 'overlay') {
-              const target = overlayLayers.find((o) => o.id === item.id);
-              if (target && target.kind !== 'sticker') {
-                setBgTargetKey(item.id);
-              }
-            } else if (item?.track === 'video') {
-              setBgTargetKey('main');
-            }
-          }}
-          onSeek={(time) => {
-            setIsPlaying(false);
-            setCurrentTime(time);
-          }}
-          onSplitSelected={handleSplitSelected}
-          onFreezeFrame={handleFreezeFrame}
-          onDeleteSelected={handleDeleteSelected}
-          onTrimVideoClip={handleTrimVideoClip}
-          onUpdateClipTransition={handleUpdateClipTransition}
-          onUpdateEffectItem={handleUpdateEffectItem}
-          onUpdateOverlay={handleUpdateOverlay}
-          onUpdateAudioClip={handleUpdateAudioClip}
-          onUpdateTextOverlay={handleUpdateTextOverlay}
-        />
+            <nav
+              aria-label="Mobile editor tools"
+              className="h-11 shrink-0 border-t border-zinc-800/80 bg-[#0E1116] flex items-center overflow-x-auto no-scrollbar px-1 gap-0.5"
+            >
+              {mobileNavItems.map(({id, label, icon: Icon}) => {
+                const isActive = mobileBottomTab === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setMobileBottomTab(id);
+                      if (id !== 'media') {
+                        handleTabChange(id);
+                      }
+                    }}
+                    aria-pressed={isActive}
+                    className={`min-w-[54px] shrink-0 h-full px-1.5 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors rounded-md ${
+                      isActive
+                        ? 'text-blue-400 bg-blue-500/10'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" aria-hidden="true" />
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </div>
+      ) : layoutMode === 'mobile-landscape' ? (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
+          <div className="flex-[55] min-h-0 flex flex-col overflow-hidden">
+            {previewNode}
+          </div>
+          <div className="flex-[45] min-h-0 flex flex-col overflow-hidden">
+            {timelineNode}
+          </div>
+
+          {landscapeDrawer !== 'none' && (
+            <>
+              <div
+                onClick={() => setLandscapeDrawer('none')}
+                className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[1px]"
+                aria-hidden="true"
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={
+                  landscapeDrawer === 'media'
+                    ? 'Media Library Drawer'
+                    : 'Editor Tools Drawer'
+                }
+                className={`fixed top-10 bottom-0 z-50 w-[min(320px,82vw)] bg-[#12151B] border-zinc-800 shadow-2xl flex flex-col overflow-hidden ${
+                  landscapeDrawer === 'media'
+                    ? 'left-0 border-r'
+                    : 'right-0 border-l'
+                }`}
+              >
+                <div className="h-9 shrink-0 px-3 border-b border-zinc-800/80 bg-[#0F1218] flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
+                    {landscapeDrawer === 'media'
+                      ? 'Media Upload'
+                      : 'Editor Tools'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setLandscapeDrawer('none')}
+                    aria-label="Close drawer"
+                    className="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {landscapeDrawer === 'media'
+                    ? renderMediaSidebar(true)
+                    : renderRightEditorPanel(true, false)}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <>
+          <main className="flex-1 min-h-0 flex overflow-hidden">
+            {renderMediaSidebar(false)}
+            {previewNode}
+            {renderRightEditorPanel(false, false)}
+          </main>
+          {timelineNode}
+        </>
       )}
 
       <ExportModal
