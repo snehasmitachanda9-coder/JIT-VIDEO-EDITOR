@@ -42,13 +42,11 @@ export function ExportModal({
               {error
                 ? 'Export Failed'
                 : isExporting
-                  ? 'Exporting Video'
-                  : 'Export Ready'}
+                  ? `Exporting 1080p HD Video... (${progress}%)`
+                  : '1080p HD Export Ready'}
             </h2>
             <p className="mt-1 text-xs text-zinc-400">
-              {error
-                ? error
-                : phase}
+              {error ? error : phase}
             </p>
           </div>
 

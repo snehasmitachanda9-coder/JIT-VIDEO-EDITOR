@@ -53,10 +53,12 @@ export interface ExportVideoResult {
 
 function chooseSupportedMimeType(): {mimeType: string; extension: string} {
   const candidates = [
+    {mimeType: 'video/mp4;codecs=avc1,mp4a.40.2', extension: 'mp4'},
+    {mimeType: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', extension: 'mp4'},
     {mimeType: 'video/webm;codecs=vp9,opus', extension: 'webm'},
     {mimeType: 'video/webm;codecs=vp8,opus', extension: 'webm'},
-    {mimeType: 'video/webm', extension: 'webm'},
     {mimeType: 'video/mp4', extension: 'mp4'},
+    {mimeType: 'video/webm', extension: 'webm'},
   ];
 
   for (const candidate of candidates) {
@@ -68,6 +70,28 @@ function chooseSupportedMimeType(): {mimeType: string; extension: string} {
     }
   }
   return {mimeType: 'video/webm', extension: 'webm'};
+}
+
+function createHighBitrateRecorder(
+  stream: MediaStream,
+  mimeType: string
+): MediaRecorder {
+  try {
+    return new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: 12_000_000,
+      audioBitsPerSecond: 192_000,
+    });
+  } catch {
+    try {
+      return new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 12_000_000,
+      });
+    } catch {
+      return new MediaRecorder(stream, {mimeType});
+    }
+  }
 }
 
 function waitForImage(url: string): Promise<HTMLImageElement> {
@@ -169,12 +193,14 @@ export async function exportEditedVideo(
   const canvas = document.createElement('canvas');
   canvas.width = dims.width;
   canvas.height = dims.height;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', {alpha: false});
   if (!ctx) {
     throw new Error('Canvas 2D context is unavailable.');
   }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
-  onProgress(2, 'Loading media assets for render...');
+  onProgress(2, `Loading media assets for ${dims.width}×${dims.height} 60fps render...`);
 
   const audioCtx = new AudioContext();
   const destination = audioCtx.createMediaStreamDestination();
@@ -296,17 +322,14 @@ export async function exportEditedVideo(
     mainBgRemoval.mode === 'ai-person' ||
     overlayLayers.some((l) => l.bgRemoval.mode === 'ai-person');
 
-  const canvasStream = canvas.captureStream(30);
+  const canvasStream = canvas.captureStream(60);
   const combinedStream = new MediaStream([
     ...canvasStream.getVideoTracks(),
     ...destination.stream.getAudioTracks(),
   ]);
 
   const {mimeType, extension} = chooseSupportedMimeType();
-  const recorder = new MediaRecorder(combinedStream, {
-    mimeType,
-    videoBitsPerSecond: 5_000_000,
-  });
+  const recorder = createHighBitrateRecorder(combinedStream, mimeType);
 
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (event) => {
@@ -358,14 +381,16 @@ export async function exportEditedVideo(
         reject(new Error('MediaRecorder failed during export.'));
     });
 
-    recorder.start(250);
-    onProgress(5, 'Rendering timeline...');
+    recorder.start(200);
+    onProgress(5, 'Exporting 1080p HD Video... (5%)');
 
-    const fps = hasAiSegmentation ? 20 : 30;
+    const fps = hasAiSegmentation ? 24 : 60;
     const frameIntervalMs = 1000 / fps;
     let currentTimelineTime = 0;
+    let frameIndex = 0;
     let activeMainClipUrl: string | null = null;
     let activeOutgoingUrl: string | null = null;
+    const renderLoopStartMs = performance.now();
 
     if (bgReplacementEl instanceof HTMLVideoElement) {
       void bgReplacementEl.play().catch(() => {});
@@ -572,6 +597,9 @@ export async function exportEditedVideo(
           ? (currentTimelineTime - outSeg.timelineStart) / outSeg.effectiveDuration
           : 1;
 
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
       renderEditorFrame({
         ctx,
         canvasWidth: dims.width,
@@ -603,16 +631,31 @@ export async function exportEditedVideo(
         98,
         Math.max(5, Math.round((currentTimelineTime / totalDuration) * 93) + 5)
       );
-      onProgress(pct, 'Rendering effects, particles, audio & transitions...');
+      onProgress(pct, `Exporting 1080p HD Video... (${pct}%)`);
 
-      const elapsedMs = performance.now() - frameStartMs;
-      const waitMs = Math.max(4, frameIntervalMs - elapsedMs);
-      await new Promise((r) => setTimeout(r, waitMs));
+      if (currentTimelineTime >= totalDuration) {
+        await new Promise((r) => setTimeout(r, 50));
+        break;
+      }
 
-      const actualStepSec = (performance.now() - frameStartMs) / 1000;
-      currentTimelineTime += hasAiSegmentation
-        ? frameIntervalMs / 1000
-        : actualStepSec;
+      frameIndex += 1;
+      const targetNextWallMs = renderLoopStartMs + frameIndex * frameIntervalMs;
+      const waitMs = Math.max(0, targetNextWallMs - performance.now());
+      if (waitMs > 0) {
+        await new Promise((r) => setTimeout(r, waitMs));
+      } else {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      const rawStepSec = (performance.now() - frameStartMs) / 1000;
+      const clampedStepSec = Math.min(0.1, Math.max(frameIntervalMs / 1000, rawStepSec));
+      const nextTime =
+        currentTimelineTime +
+        (hasAiSegmentation ? frameIntervalMs / 1000 : clampedStepSec);
+      currentTimelineTime =
+        currentTimelineTime < totalDuration && nextTime > totalDuration
+          ? totalDuration
+          : nextTime;
     }
 
     if (signal.aborted) {
@@ -620,7 +663,7 @@ export async function exportEditedVideo(
       throw new Error('Export cancelled.');
     }
 
-    onProgress(99, 'Finalizing video file...');
+    onProgress(99, 'Finalizing 1080p HD video file...');
     mainVideoEl.pause();
     outgoingVideoEl.pause();
     audioClipElements.forEach(({el: a}) => {
@@ -629,7 +672,7 @@ export async function exportEditedVideo(
     if (recorder.state !== 'inactive') recorder.stop();
 
     const blob = await recorderStopped;
-    onProgress(100, 'Export complete');
+    onProgress(100, '1080p HD Export complete!');
     return {blob, mimeType, extension};
   } finally {
     cleanup();

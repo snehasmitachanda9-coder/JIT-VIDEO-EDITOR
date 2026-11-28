@@ -326,12 +326,12 @@ export function TimelinePanel({
     } else if (op.kind === 'effect-trim-left') {
       const nextStart = Math.max(
         0,
-        Math.min(op.origEndTime - 0.25, op.origStartTime + deltaSec)
+        Math.min(op.origEndTime - 0.5, op.origStartTime + deltaSec)
       );
       onUpdateEffectItem(op.id, {startTime: nextStart});
     } else if (op.kind === 'effect-trim-right') {
       const nextEnd = Math.max(
-        op.origStartTime + 0.25,
+        op.origStartTime + 0.5,
         op.origEndTime + deltaSec
       );
       onUpdateEffectItem(op.id, {endTime: nextEnd});
@@ -924,36 +924,42 @@ export function TimelinePanel({
                     const fullLabel = `${ef.icon} ${ef.name} • ${intensityPct}% (${formatTime(ef.startTime)} - ${formatTime(ef.endTime)})`;
 
                     const styleByCategory =
-                      ef.category === 'motion'
+                      ef.category === 'fx34'
                         ? isSelected
-                          ? 'border-cyan-300 bg-cyan-500/35 ring-1 ring-cyan-300/80 text-cyan-50'
-                          : 'border-cyan-400/70 bg-cyan-600/30 hover:border-cyan-300 text-cyan-100'
-                        : ef.category === 'studio'
+                          ? 'border-emerald-300 bg-emerald-500/35 ring-1 ring-emerald-300/80 text-emerald-50'
+                          : 'border-emerald-400/70 bg-emerald-600/30 hover:border-emerald-300 text-emerald-100'
+                        : ef.category === 'motion'
                           ? isSelected
-                            ? 'border-pink-300 bg-pink-500/35 ring-1 ring-pink-300/80 text-pink-50'
-                            : 'border-pink-400/70 bg-pink-600/30 hover:border-pink-300 text-pink-100'
-                          : ef.category === 'cinema'
+                            ? 'border-cyan-300 bg-cyan-500/35 ring-1 ring-cyan-300/80 text-cyan-50'
+                            : 'border-cyan-400/70 bg-cyan-600/30 hover:border-cyan-300 text-cyan-100'
+                          : ef.category === 'studio'
                             ? isSelected
-                              ? 'border-amber-300 bg-amber-500/35 ring-1 ring-amber-300/80 text-amber-50'
-                              : 'border-amber-400/70 bg-amber-600/30 hover:border-amber-300 text-amber-100'
-                            : ef.category === 'filter'
+                              ? 'border-pink-300 bg-pink-500/35 ring-1 ring-pink-300/80 text-pink-50'
+                              : 'border-pink-400/70 bg-pink-600/30 hover:border-pink-300 text-pink-100'
+                            : ef.category === 'cinema'
                               ? isSelected
-                                ? 'border-fuchsia-300 bg-fuchsia-500/35 ring-1 ring-fuchsia-300/80 text-fuchsia-50'
-                                : 'border-fuchsia-400/70 bg-fuchsia-600/30 hover:border-fuchsia-300 text-fuchsia-100'
-                              : isSelected
-                                ? 'border-violet-300 bg-violet-500/40 ring-1 ring-violet-300/80 text-white'
-                                : 'border-violet-400/70 bg-violet-600/35 hover:border-violet-300 text-violet-100';
+                                ? 'border-amber-300 bg-amber-500/35 ring-1 ring-amber-300/80 text-amber-50'
+                                : 'border-amber-400/70 bg-amber-600/30 hover:border-amber-300 text-amber-100'
+                              : ef.category === 'filter'
+                                ? isSelected
+                                  ? 'border-fuchsia-300 bg-fuchsia-500/35 ring-1 ring-fuchsia-300/80 text-fuchsia-50'
+                                  : 'border-fuchsia-400/70 bg-fuchsia-600/30 hover:border-fuchsia-300 text-fuchsia-100'
+                                : isSelected
+                                  ? 'border-violet-300 bg-violet-500/40 ring-1 ring-violet-300/80 text-white'
+                                  : 'border-violet-400/70 bg-violet-600/35 hover:border-violet-300 text-violet-100';
 
                     const handleColor =
-                      ef.category === 'motion'
-                        ? 'bg-cyan-400/60 hover:bg-cyan-300'
-                        : ef.category === 'studio'
-                          ? 'bg-pink-400/60 hover:bg-pink-300'
-                          : ef.category === 'cinema'
-                            ? 'bg-amber-400/60 hover:bg-amber-300'
-                            : ef.category === 'filter'
-                              ? 'bg-fuchsia-400/60 hover:bg-fuchsia-300'
-                              : 'bg-violet-400/60 hover:bg-violet-300';
+                      ef.category === 'fx34'
+                        ? 'bg-emerald-400/60 hover:bg-emerald-300'
+                        : ef.category === 'motion'
+                          ? 'bg-cyan-400/60 hover:bg-cyan-300'
+                          : ef.category === 'studio'
+                            ? 'bg-pink-400/60 hover:bg-pink-300'
+                            : ef.category === 'cinema'
+                              ? 'bg-amber-400/60 hover:bg-amber-300'
+                              : ef.category === 'filter'
+                                ? 'bg-fuchsia-400/60 hover:bg-fuchsia-300'
+                                : 'bg-violet-400/60 hover:bg-violet-300';
 
                     return (
                       <div

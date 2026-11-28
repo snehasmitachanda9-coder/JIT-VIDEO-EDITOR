@@ -15,6 +15,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Search,
   Sliders,
   Smile,
   Sparkles,
@@ -23,6 +24,7 @@ import {
   Upload,
   Volume2,
   VolumeX,
+  Wand2,
   Wind,
   X,
 } from 'lucide-react';
@@ -61,17 +63,22 @@ import {warmUpSelfieSegmentation} from '../utils/backgroundRemover';
 import {
   EFFECT_CATALOG,
   FACE_ANCHOR_POSITIONS,
+  FX34_CATALOG,
+  FX34_SUBGROUP_LABELS,
   getEffectCatalogEntry,
   getEffectIntensityLabel,
   JIT_LOGO_URL,
   OVERLAY_ANIMATION_OPTIONS,
   TRANSITION_OPTIONS,
   WATERMARK_CORNER_POSITIONS,
+  type Effect34Subgroup,
   type WatermarkCorner,
 } from '../utils/effectCatalog';
 import {formatFileSize, formatTime} from '../utils/formatTime';
 import {BUILT_IN_SFX_LIST, playSfxPreview} from '../utils/soundEffects';
 import {STICKER_CATALOG} from '../utils/stickerRenderer';
+import {computeVideoTimelineSegments} from '../utils/timelineMath';
+import {EffectPreviewCard} from './EffectPreviewCard';
 
 interface RightEditorPanelProps {
   isCollapsed: boolean;
@@ -273,6 +280,8 @@ export function RightEditorPanel({
 
   const [watermarkCorner, setWatermarkCorner] =
     useState<WatermarkCorner>('top-right');
+  const [fxSubgroup, setFxSubgroup] = useState<Effect34Subgroup>('all');
+  const [fxSearch, setFxSearch] = useState('');
   const [previewingSfx, setPreviewingSfx] = useState<BuiltInSfxKind | null>(
     null
   );
@@ -411,7 +420,8 @@ export function RightEditorPanel({
     shortLabel: string;
     icon: typeof TypeIcon;
   }> = [
-    {id: 'motion', label: 'Motion & Effects', shortLabel: 'Effects', icon: Move},
+    {id: 'effects', label: 'Visual Effects (34)', shortLabel: 'Effects', icon: Wand2},
+    {id: 'motion', label: 'Motion & Transform', shortLabel: 'Motion', icon: Move},
     {id: 'filters', label: 'Filters & Color', shortLabel: 'Color', icon: Sliders},
     {id: 'bg-remove', label: 'BG Remove', shortLabel: 'BG Cut', icon: Eraser},
     {id: 'stickers', label: 'Stickers & Face', shortLabel: 'Stickers', icon: Smile},
@@ -419,6 +429,16 @@ export function RightEditorPanel({
     {id: 'audio', label: 'Audio & SFX', shortLabel: 'Audio', icon: Music},
     {id: 'ai', label: 'AI Studio', shortLabel: 'AI', icon: Sparkles},
   ];
+
+  const filteredFx34 = FX34_CATALOG.filter((item) => {
+    if (fxSubgroup !== 'all' && item.subgroup !== fxSubgroup) return false;
+    const q = fxSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      item.name.toLowerCase().includes(q) ||
+      item.description.toLowerCase().includes(q)
+    );
+  });
 
   if (!embedded && isCollapsed) {
     return (
@@ -471,7 +491,7 @@ export function RightEditorPanel({
       className={
         embedded
           ? 'w-full flex-1 min-h-0 bg-[#12151B] flex flex-col'
-          : 'w-72 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0'
+          : 'w-80 shrink-0 border-l border-zinc-800/80 bg-[#12151B] flex flex-col min-h-0'
       }
     >
       {/* Inspector Header */}
@@ -492,12 +512,12 @@ export function RightEditorPanel({
         </div>
       )}
 
-      {/* 7-Tab Bar */}
+      {/* 8-Tab Bar */}
       {!hideTabBar && (
         <div
           role="tablist"
           aria-label="Editing Tools"
-          className="shrink-0 grid grid-cols-7 border-b border-zinc-800/80 bg-[#0E1116]"
+          className="shrink-0 grid grid-cols-8 border-b border-zinc-800/80 bg-[#0E1116]"
         >
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -510,7 +530,7 @@ export function RightEditorPanel({
                 title={tab.label}
                 aria-selected={active}
                 onClick={() => onTabChange(tab.id)}
-                className={`py-2 px-0.5 flex flex-col items-center justify-center gap-1 text-[10px] font-medium border-b-2 transition-colors whitespace-nowrap ${
+                className={`py-2 px-0.5 flex flex-col items-center justify-center gap-1 text-[9.5px] font-medium border-b-2 transition-colors whitespace-nowrap ${
                   active
                     ? 'border-blue-500 text-zinc-100 bg-[#12151B]'
                     : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'
@@ -531,327 +551,555 @@ export function RightEditorPanel({
         }`}
       >
         {/* Dedicated Active Effect Inspector Box (shown whenever an Effect block is added or selected) */}
-        {selectedEffect && (
-          <div className="rounded-xl border border-violet-500/50 bg-[#151923] p-3 space-y-3 shadow-lg">
-            <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm leading-none" aria-hidden="true">
-                    {selectedEffect.icon}
-                  </span>
-                  <h3 className="text-xs font-semibold text-white truncate">
-                    {selectedEffect.name}
-                  </h3>
-                </div>
-                <p className="text-[10px] text-zinc-400 mt-0.5">
-                  Selected Effect on Timeline
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <span className="px-2 py-0.5 rounded bg-violet-500/20 border border-violet-500/40 text-[10px] font-mono tabular-nums text-violet-200">
-                  {(selectedEffect.endTime - selectedEffect.startTime).toFixed(1)}s
-                </span>
-                <button
-                  type="button"
-                  onClick={onCloseEffectInspector}
-                  title="Close Effect Inspector"
-                  aria-label="Close Effect Inspector"
-                  className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" aria-hidden="true" />
-                </button>
-              </div>
-            </div>
+        {selectedEffect && (() => {
+          const effectDur = Math.max(
+            0.5,
+            Number((selectedEffect.endTime - selectedEffect.startTime).toFixed(2))
+          );
+          const maxDurationBound = Math.max(
+            4,
+            Number(Math.max(totalDuration, selectedEffect.endTime).toFixed(1))
+          );
+          const segments = computeVideoTimelineSegments(
+            videoClips,
+            audioSettings.playbackSpeed,
+            effectItems
+          );
+          const clipAtPlayhead =
+            segments.find(
+              (s) =>
+                (selectedVideoClipId && s.clip.id === selectedVideoClipId) ||
+                (currentTime >= s.timelineStart && currentTime <= s.timelineEnd)
+            ) ?? segments[0] ?? null;
+          const minIntensity = selectedEffect.category === 'fx34' ? 0.1 : 0;
 
-            {/* (a) Exact Start Time & End Time (sec) */}
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label
-                  htmlFor="effect-start-sec"
-                  className="block text-[10px] font-medium text-zinc-300 mb-1"
-                >
-                  Start Time (sec)
-                </label>
-                <input
-                  id="effect-start-sec"
-                  type="number"
-                  min={0}
-                  max={Math.max(0, Number((selectedEffect.endTime - 0.2).toFixed(2)))}
-                  step={0.1}
-                  value={Number(selectedEffect.startTime.toFixed(2))}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    if (!Number.isFinite(val)) return;
-                    const clamped = Math.max(
-                      0,
-                      Math.min(selectedEffect.endTime - 0.2, val)
-                    );
-                    onUpdateEffectItem(selectedEffect.id, {startTime: clamped});
-                  }}
-                  className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-violet-500"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="effect-end-sec"
-                  className="block text-[10px] font-medium text-zinc-300 mb-1"
-                >
-                  End Time (sec)
-                </label>
-                <input
-                  id="effect-end-sec"
-                  type="number"
-                  min={Number((selectedEffect.startTime + 0.2).toFixed(2))}
-                  step={0.1}
-                  value={Number(selectedEffect.endTime.toFixed(2))}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    if (!Number.isFinite(val)) return;
-                    const clamped = Math.max(selectedEffect.startTime + 0.2, val);
-                    onUpdateEffectItem(selectedEffect.id, {endTime: clamped});
-                  }}
-                  className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-violet-500"
-                />
-              </div>
-            </div>
-
-            {/* (b) Effect Intensity / Amount + Low / Medium / High presets */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <label
-                  htmlFor="selected-effect-intensity"
-                  className="font-medium text-zinc-200"
-                >
-                  Effect Intensity / Amount
-                </label>
-                <span className="font-mono tabular-nums text-violet-300 font-semibold">
-                  {Math.round(selectedEffect.intensity * 100)}%
-                </span>
-              </div>
-              <input
-                id="selected-effect-intensity"
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={selectedEffect.intensity}
-                onChange={(e) =>
-                  onUpdateEffectItem(selectedEffect.id, {
-                    intensity: Number(e.target.value),
-                  })
-                }
-                className="w-full accent-violet-500 cursor-pointer"
-              />
-              <div className="flex items-center justify-between gap-1 pt-0.5">
-                {[
-                  {label: 'Low', val: 0.25},
-                  {label: 'Medium', val: 0.6},
-                  {label: 'High', val: 0.95},
-                ].map((preset) => {
-                  const isCurrent =
-                    Math.abs(selectedEffect.intensity - preset.val) < 0.08;
-                  return (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() =>
-                        onUpdateEffectItem(selectedEffect.id, {
-                          intensity: preset.val,
-                        })
-                      }
-                      className={`flex-1 py-1 rounded border text-[10px] font-medium transition-colors ${
-                        isCurrent
-                          ? 'border-violet-400 bg-violet-500/25 text-violet-100'
-                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[10px] text-zinc-400">
-                Level:{' '}
-                <span className="text-zinc-200 font-medium">
-                  {getEffectIntensityLabel(
-                    selectedEffect.type,
-                    selectedEffect.intensity
-                  )}
-                </span>
-              </p>
-            </div>
-
-            {(selectedEffect.type === 'zoom-in' ||
-              selectedEffect.type === 'zoom-out') && (
-              <div className="pt-2 border-t border-zinc-800/80 space-y-2.5">
-                <div>
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <label
-                      htmlFor="selected-zoom-target"
-                      className="font-medium text-cyan-200"
-                    >
-                      Target Zoom %
-                    </label>
-                    <span className="font-mono tabular-nums text-cyan-300 font-semibold">
-                      {Math.round(selectedEffect.targetZoom ?? 165)}%
+          return (
+            <div className="rounded-xl border border-emerald-500/50 bg-[#141A22] p-3 space-y-3 shadow-lg">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm leading-none" aria-hidden="true">
+                      {selectedEffect.icon}
                     </span>
+                    <h3 className="text-xs font-semibold text-white truncate">
+                      {selectedEffect.name}
+                    </h3>
+                  </div>
+                  <p className="text-[10px] text-zinc-400 font-mono tabular-nums mt-0.5">
+                    {formatTime(selectedEffect.startTime)} –{' '}
+                    {formatTime(selectedEffect.endTime)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-mono tabular-nums text-emerald-200">
+                    {effectDur.toFixed(1)}s
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onCloseEffectInspector}
+                    title="Close Effect Inspector"
+                    aria-label="Close Effect Inspector"
+                    className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Start Time (0.0s) & Duration (0.5s to full video length) */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label
+                      htmlFor="effect-start-sec"
+                      className="text-[10px] font-medium text-zinc-300"
+                    >
+                      Start Time (s)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextStart = Math.max(
+                          0,
+                          Number(currentTime.toFixed(2))
+                        );
+                        onUpdateEffectItem(selectedEffect.id, {
+                          startTime: nextStart,
+                          endTime: Number((nextStart + effectDur).toFixed(2)),
+                        });
+                      }}
+                      className="text-[9.5px] font-medium text-cyan-300 hover:text-cyan-200"
+                    >
+                      @ Playhead
+                    </button>
                   </div>
                   <input
-                    id="selected-zoom-target"
-                    type="range"
-                    min={110}
-                    max={300}
-                    step={1}
-                    value={selectedEffect.targetZoom ?? 165}
-                    onChange={(e) =>
+                    id="effect-start-sec"
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={Number(selectedEffect.startTime.toFixed(2))}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (!Number.isFinite(val)) return;
+                      const clampedStart = Math.max(0, val);
                       onUpdateEffectItem(selectedEffect.id, {
-                        targetZoom: Number(e.target.value),
-                      })
-                    }
-                    className="w-full accent-cyan-400 cursor-pointer"
+                        startTime: clampedStart,
+                        endTime: Number((clampedStart + effectDur).toFixed(2)),
+                      });
+                    }}
+                    className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <div className="flex items-center justify-between text-[10px] mb-0.5">
-                      <label htmlFor="zoom-focus-x" className="text-zinc-300">
-                        Center X
-                      </label>
-                      <span className="font-mono tabular-nums text-zinc-400">
-                        {Math.round(selectedEffect.zoomCenterX ?? 50)}%
-                      </span>
-                    </div>
-                    <input
-                      id="zoom-focus-x"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={selectedEffect.zoomCenterX ?? 50}
-                      onChange={(e) =>
-                        onUpdateEffectItem(selectedEffect.id, {
-                          zoomCenterX: Number(e.target.value),
-                        })
-                      }
-                      className="w-full accent-cyan-400 cursor-pointer"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between text-[10px] mb-0.5">
-                      <label htmlFor="zoom-focus-y" className="text-zinc-300">
-                        Center Y
-                      </label>
-                      <span className="font-mono tabular-nums text-zinc-400">
-                        {Math.round(selectedEffect.zoomCenterY ?? 50)}%
-                      </span>
-                    </div>
-                    <input
-                      id="zoom-focus-y"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={selectedEffect.zoomCenterY ?? 50}
-                      onChange={(e) =>
-                        onUpdateEffectItem(selectedEffect.id, {
-                          zoomCenterY: Number(e.target.value),
-                        })
-                      }
-                      className="w-full accent-cyan-400 cursor-pointer"
-                    />
-                  </div>
+                <div>
+                  <label
+                    htmlFor="effect-duration-sec"
+                    className="block text-[10px] font-medium text-zinc-300 mb-1"
+                  >
+                    Duration (sec)
+                  </label>
+                  <input
+                    id="effect-duration-sec"
+                    type="number"
+                    min={0.5}
+                    max={maxDurationBound}
+                    step={0.1}
+                    value={Number(effectDur.toFixed(2))}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (!Number.isFinite(val)) return;
+                      const nextDur = Math.max(0.5, val);
+                      onUpdateEffectItem(selectedEffect.id, {
+                        endTime: Number(
+                          (selectedEffect.startTime + nextDur).toFixed(2)
+                        ),
+                      });
+                    }}
+                    className="w-full rounded-lg border border-zinc-700 bg-[#0B0D10] px-2 py-1 text-xs font-mono tabular-nums text-zinc-100 focus:outline-none focus:border-emerald-500"
+                  />
                 </div>
+              </div>
 
-                <button
-                  type="button"
-                  onClick={() =>
+              {/* Duration Slider + Match Clip / Full Video Quick Actions */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <label
+                    htmlFor="selected-effect-duration-range"
+                    className="font-medium text-zinc-200"
+                  >
+                    FX Duration
+                  </label>
+                  <span className="font-mono tabular-nums text-emerald-300 font-semibold">
+                    {effectDur.toFixed(1)}s / {maxDurationBound.toFixed(1)}s
+                  </span>
+                </div>
+                <input
+                  id="selected-effect-duration-range"
+                  type="range"
+                  min={0.5}
+                  max={maxDurationBound}
+                  step={0.1}
+                  value={Math.min(maxDurationBound, effectDur)}
+                  onChange={(e) => {
+                    const nextDur = Math.max(0.5, Number(e.target.value));
                     onUpdateEffectItem(selectedEffect.id, {
-                      zoomCenterX: 50,
-                      zoomCenterY: 50,
+                      endTime: Number(
+                        (selectedEffect.startTime + nextDur).toFixed(2)
+                      ),
+                    });
+                  }}
+                  className="w-full accent-emerald-500 cursor-pointer"
+                />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!clipAtPlayhead}
+                    onClick={() => {
+                      if (!clipAtPlayhead) return;
+                      onUpdateEffectItem(selectedEffect.id, {
+                        startTime: Number(clipAtPlayhead.timelineStart.toFixed(2)),
+                        endTime: Number(
+                          Math.max(
+                            clipAtPlayhead.timelineStart + 0.5,
+                            clipAtPlayhead.timelineEnd
+                          ).toFixed(2)
+                        ),
+                      });
+                    }}
+                    className="py-1 px-2 rounded border border-zinc-800 bg-[#0D1015] hover:border-emerald-500/60 disabled:opacity-40 text-[10px] font-medium text-zinc-200 transition-colors"
+                  >
+                    Match Selected Clip
+                  </button>
+                  <button
+                    type="button"
+                    disabled={totalDuration <= 0.5}
+                    onClick={() => {
+                      const end = Math.max(0.5, Number(totalDuration.toFixed(2)));
+                      onUpdateEffectItem(selectedEffect.id, {
+                        startTime: 0,
+                        endTime: end,
+                      });
+                    }}
+                    className="py-1 px-2 rounded border border-zinc-800 bg-[#0D1015] hover:border-emerald-500/60 disabled:opacity-40 text-[10px] font-medium text-zinc-200 transition-colors"
+                  >
+                    Full Video Length
+                  </button>
+                </div>
+              </div>
+
+              {/* Intensity / Strength (10% - 100%) + Low / Medium / High presets */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <label
+                    htmlFor="selected-effect-intensity"
+                    className="font-medium text-zinc-200"
+                  >
+                    Intensity / Strength
+                  </label>
+                  <span className="font-mono tabular-nums text-violet-300 font-semibold">
+                    {Math.round(selectedEffect.intensity * 100)}%
+                  </span>
+                </div>
+                <input
+                  id="selected-effect-intensity"
+                  type="range"
+                  min={minIntensity}
+                  max={1}
+                  step={0.01}
+                  value={Math.max(minIntensity, selectedEffect.intensity)}
+                  onChange={(e) =>
+                    onUpdateEffectItem(selectedEffect.id, {
+                      intensity: Number(e.target.value),
                     })
                   }
-                  className="w-full py-1 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-700 text-[10px] text-zinc-300 transition-colors"
-                >
-                  Reset Focus (50%, 50%)
-                </button>
-              </div>
-            )}
-
-            {selectedEffect.type === 'speed-ramp' && (
-              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
-                <span className="block text-[11px] font-medium text-cyan-200">
-                  Speed Ramp Curve
-                </span>
-                <div className="grid grid-cols-2 gap-1.5">
+                  className="w-full accent-violet-500 cursor-pointer"
+                />
+                <div className="flex items-center justify-between gap-1 pt-0.5">
                   {[
-                    {id: 'slow-mo', label: 'Slow-Mo Pulse'},
-                    {id: 'speed-up', label: 'Speed Boost'},
-                  ].map((modeOpt) => {
-                    const currentMode = selectedEffect.speedRampMode ?? 'slow-mo';
-                    const isModeActive = currentMode === modeOpt.id;
+                    {label: 'Low', val: 0.25},
+                    {label: 'Medium', val: 0.6},
+                    {label: 'High', val: 0.95},
+                  ].map((preset) => {
+                    const isCurrent =
+                      Math.abs(selectedEffect.intensity - preset.val) < 0.08;
                     return (
                       <button
-                        key={modeOpt.id}
+                        key={preset.label}
                         type="button"
                         onClick={() =>
                           onUpdateEffectItem(selectedEffect.id, {
-                            speedRampMode: modeOpt.id as SpeedRampMode,
+                            intensity: preset.val,
                           })
                         }
-                        className={`py-1.5 px-2 rounded-lg border text-[10px] font-medium transition-colors ${
-                          isModeActive
-                            ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                        className={`flex-1 py-1 rounded border text-[10px] font-medium transition-colors ${
+                          isCurrent
+                            ? 'border-violet-400 bg-violet-500/25 text-violet-100'
                             : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
                         }`}
                       >
-                        {modeOpt.label}
+                        {preset.label}
                       </button>
                     );
                   })}
                 </div>
+                <p className="text-[10px] text-zinc-400">
+                  Level:{' '}
+                  <span className="text-zinc-200 font-medium">
+                    {getEffectIntensityLabel(
+                      selectedEffect.type,
+                      selectedEffect.intensity
+                    )}
+                  </span>
+                </p>
               </div>
-            )}
 
-            {/* Opacity Slider (0% - 100%) */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-[11px]">
-                <label
-                  htmlFor="selected-effect-opacity"
-                  className="font-medium text-zinc-200"
-                >
-                  Opacity
-                </label>
-                <span className="font-mono tabular-nums text-zinc-300">
-                  {Math.round(selectedEffect.opacity * 100)}%
-                </span>
+              {(selectedEffect.type === 'zoom-in' ||
+                selectedEffect.type === 'zoom-out') && (
+                <div className="pt-2 border-t border-zinc-800/80 space-y-2.5">
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] mb-1">
+                      <label
+                        htmlFor="selected-zoom-target"
+                        className="font-medium text-cyan-200"
+                      >
+                        Target Zoom %
+                      </label>
+                      <span className="font-mono tabular-nums text-cyan-300 font-semibold">
+                        {Math.round(selectedEffect.targetZoom ?? 165)}%
+                      </span>
+                    </div>
+                    <input
+                      id="selected-zoom-target"
+                      type="range"
+                      min={110}
+                      max={300}
+                      step={1}
+                      value={selectedEffect.targetZoom ?? 165}
+                      onChange={(e) =>
+                        onUpdateEffectItem(selectedEffect.id, {
+                          targetZoom: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-cyan-400 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex items-center justify-between text-[10px] mb-0.5">
+                        <label htmlFor="zoom-focus-x" className="text-zinc-300">
+                          Center X
+                        </label>
+                        <span className="font-mono tabular-nums text-zinc-400">
+                          {Math.round(selectedEffect.zoomCenterX ?? 50)}%
+                        </span>
+                      </div>
+                      <input
+                        id="zoom-focus-x"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={selectedEffect.zoomCenterX ?? 50}
+                        onChange={(e) =>
+                          onUpdateEffectItem(selectedEffect.id, {
+                            zoomCenterX: Number(e.target.value),
+                          })
+                        }
+                        className="w-full accent-cyan-400 cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-[10px] mb-0.5">
+                        <label htmlFor="zoom-focus-y" className="text-zinc-300">
+                          Center Y
+                        </label>
+                        <span className="font-mono tabular-nums text-zinc-400">
+                          {Math.round(selectedEffect.zoomCenterY ?? 50)}%
+                        </span>
+                      </div>
+                      <input
+                        id="zoom-focus-y"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={selectedEffect.zoomCenterY ?? 50}
+                        onChange={(e) =>
+                          onUpdateEffectItem(selectedEffect.id, {
+                            zoomCenterY: Number(e.target.value),
+                          })
+                        }
+                        className="w-full accent-cyan-400 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateEffectItem(selectedEffect.id, {
+                        zoomCenterX: 50,
+                        zoomCenterY: 50,
+                      })
+                    }
+                    className="w-full py-1 rounded border border-zinc-800 bg-[#0D1015] hover:border-zinc-700 text-[10px] text-zinc-300 transition-colors"
+                  >
+                    Reset Focus (50%, 50%)
+                  </button>
+                </div>
+              )}
+
+              {selectedEffect.type === 'speed-ramp' && (
+                <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                  <span className="block text-[11px] font-medium text-cyan-200">
+                    Speed Ramp Curve
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      {id: 'slow-mo', label: 'Slow-Mo Pulse'},
+                      {id: 'speed-up', label: 'Speed Boost'},
+                    ].map((modeOpt) => {
+                      const currentMode = selectedEffect.speedRampMode ?? 'slow-mo';
+                      const isModeActive = currentMode === modeOpt.id;
+                      return (
+                        <button
+                          key={modeOpt.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateEffectItem(selectedEffect.id, {
+                              speedRampMode: modeOpt.id as SpeedRampMode,
+                            })
+                          }
+                          className={`py-1.5 px-2 rounded-lg border text-[10px] font-medium transition-colors ${
+                            isModeActive
+                              ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                              : 'border-zinc-800 bg-[#0D1015] text-zinc-300 hover:border-zinc-700'
+                          }`}
+                        >
+                          {modeOpt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Opacity Slider (0% - 100%) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <label
+                    htmlFor="selected-effect-opacity"
+                    className="font-medium text-zinc-200"
+                  >
+                    Opacity
+                  </label>
+                  <span className="font-mono tabular-nums text-zinc-300">
+                    {Math.round(selectedEffect.opacity * 100)}%
+                  </span>
+                </div>
+                <input
+                  id="selected-effect-opacity"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={selectedEffect.opacity}
+                  onChange={(e) =>
+                    onUpdateEffectItem(selectedEffect.id, {
+                      opacity: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-blue-500 cursor-pointer"
+                />
               </div>
+
+              {/* Prominent Red Remove Effect Button */}
+              <button
+                type="button"
+                onClick={() => onDeleteEffectItem(selectedEffect.id)}
+                className="w-full py-1.5 px-3 rounded-lg bg-red-600/90 hover:bg-red-500 text-[11px] font-semibold text-white inline-flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Remove Effect</span>
+              </button>
+            </div>
+          );
+        })()}
+
+        {activeTab === 'effects' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xs font-semibold text-zinc-100">
+                  Visual Effects Library (34 FX)
+                </h2>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Click any animated effect to add to Timeline FX Track
+                </p>
+              </div>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-mono tabular-nums text-emerald-300 shrink-0">
+                60fps HD
+              </span>
+            </div>
+
+            {/* Search Input */}
+            <div className="relative">
+              <Search
+                className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                aria-hidden="true"
+              />
               <input
-                id="selected-effect-opacity"
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={selectedEffect.opacity}
-                onChange={(e) =>
-                  onUpdateEffectItem(selectedEffect.id, {
-                    opacity: Number(e.target.value),
-                  })
-                }
-                className="w-full accent-blue-500 cursor-pointer"
+                type="search"
+                value={fxSearch}
+                onChange={(e) => setFxSearch(e.target.value)}
+                placeholder="Search 34 effects (e.g. Fisheye, Fire, Coin)..."
+                aria-label="Search visual effects"
+                className="w-full rounded-lg border border-zinc-800 bg-[#0B0D10] pl-8 pr-2.5 py-1.5 text-[11px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-emerald-500"
               />
             </div>
 
-            {/* (c) Prominent Red Remove Effect Button */}
-            <button
-              type="button"
-              onClick={() => onDeleteEffectItem(selectedEffect.id)}
-              className="w-full py-1.5 px-3 rounded-lg bg-red-600/90 hover:bg-red-500 text-[11px] font-semibold text-white inline-flex items-center justify-center gap-1.5 transition-colors shadow-sm"
-            >
-              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Remove Effect</span>
-            </button>
+            {/* Category Filter Strip */}
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5">
+              {FX34_SUBGROUP_LABELS.map((cat) => {
+                const active = fxSubgroup === cat.id;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setFxSubgroup(cat.id)}
+                    className={`px-2 py-1 rounded-md border text-[10px] font-medium whitespace-nowrap shrink-0 transition-colors ${
+                      active
+                        ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100'
+                        : 'border-zinc-800 bg-[#0D1015] text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Live Animated Effect Preview Cards Grid */}
+            {filteredFx34.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-800 bg-[#0D1015] p-4 text-center">
+                <p className="text-[11px] text-zinc-400">
+                  No effects match &ldquo;{fxSearch}&rdquo;.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {filteredFx34.map((fx) => (
+                  <EffectPreviewCard
+                    key={fx.type}
+                    effect={fx}
+                    isSelected={selectedEffect?.type === fx.type}
+                    onAdd={(type) => onAddTimelineEffect(type)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Quick Active FX Layers List */}
+            {effectItems.length > 0 && (
+              <div className="pt-3 border-t border-zinc-800/80 space-y-1.5">
+                <span className="block text-[10px] font-medium text-zinc-400">
+                  Active Timeline FX Layers ({effectItems.length})
+                </span>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {effectItems.map((ef) => (
+                    <div
+                      key={ef.id}
+                      className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-[11px] ${
+                        selectedEffect?.id === ef.id
+                          ? 'border-emerald-400 bg-emerald-500/15 text-emerald-100'
+                          : 'border-zinc-800 bg-[#0D1015] text-zinc-300'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelectEffectItem(ef.id)}
+                        className="flex-1 text-left truncate"
+                      >
+                        {ef.icon} {ef.name} · {Math.round(ef.intensity * 100)}%
+                      </button>
+                      <span className="text-[10px] font-mono tabular-nums text-zinc-400 shrink-0">
+                        {formatTime(ef.startTime)}–{formatTime(ef.endTime)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteEffectItem(ef.id)}
+                        aria-label={`Remove ${ef.name}`}
+                        className="p-0.5 rounded text-zinc-500 hover:text-red-400"
+                      >
+                        <Trash2 className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

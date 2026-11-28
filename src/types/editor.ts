@@ -13,6 +13,7 @@ export type FilterPreset =
   | 'glitch';
 
 export type RightPanelTab =
+  | 'effects'
   | 'motion'
   | 'filters'
   | 'bg-remove'
@@ -45,6 +46,42 @@ export type CinemaVfxType =
   | 'light-leak'
   | 'ai-portrait';
 
+export type Effect34Type =
+  | 'heart-beat'
+  | 'dazzling'
+  | 'ghost'
+  | 'flash'
+  | 'open-1'
+  | 'open-2'
+  | 'close-1'
+  | 'close-2'
+  | 'fade-in'
+  | 'fade-out'
+  | 'fisheye'
+  | 'the-end'
+  | 'white-in'
+  | 'fire-blaze'
+  | 'dust-super'
+  | 'doodling'
+  | 'footage'
+  | 'dreamy'
+  | 'disco'
+  | 'butterfly'
+  | 'spark'
+  | 'smokey'
+  | 'matrix'
+  | 'bubble'
+  | 'ribbon'
+  | 'shimmer'
+  | 'silver'
+  | 'love-bloom'
+  | 'neon-star'
+  | 'pumpkin'
+  | 'bats'
+  | 'fire-frame'
+  | 'neon-sketch'
+  | 'gold-coin';
+
 export type TimelineEffectType =
   | WeatherEffectType
   | MotionEffectType
@@ -58,14 +95,16 @@ export type TimelineEffectType =
   | 'bw'
   | 'warm'
   | StudioVfxType
-  | CinemaVfxType;
+  | CinemaVfxType
+  | Effect34Type;
 
 export type TimelineEffectCategory =
   | 'weather'
   | 'motion'
   | 'filter'
   | 'studio'
-  | 'cinema';
+  | 'cinema'
+  | 'fx34';
 
 export type SpeedRampMode = 'slow-mo' | 'speed-up';
 

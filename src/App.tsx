@@ -15,6 +15,7 @@ import {
   Smile,
   Sparkles,
   Type as TypeIcon,
+  Wand2,
   X,
 } from 'lucide-react';
 import {ExportModal} from './components/ExportModal';
@@ -258,7 +259,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Right Inspector Tab
-  const [activeRightTab, setActiveRightTab] = useState<RightPanelTab>('motion');
+  const [activeRightTab, setActiveRightTab] = useState<RightPanelTab>('effects');
 
   // Audio Beat Sync Analysis
   const [beatSync, setBeatSync] = useState<BeatSyncAnalysis | null>(null);
@@ -1199,11 +1200,20 @@ export default function App() {
   const handleSelectEffectItem = useCallback(
     (id: string) => {
       setSelectedItem({track: 'effect', id});
+      const target = effectItems.find((e) => e.id === id);
+      const nextTab: RightPanelTab =
+        target?.category === 'fx34'
+          ? 'effects'
+          : target?.category === 'filter'
+            ? 'filters'
+            : 'motion';
       if (layoutMode === 'mobile-portrait') {
-        setMobileBottomTab((prev) => (prev === 'filters' ? prev : 'motion'));
+        setMobileBottomTab((prev) =>
+          prev === 'effects' || prev === 'filters' ? prev : nextTab
+        );
       }
     },
-    [layoutMode]
+    [layoutMode, effectItems]
   );
 
   const handleUpdateEffectItem = useCallback(
@@ -1709,9 +1719,11 @@ export default function App() {
     }
 
     setIsPlaying(false);
+    setCurrentTime(0);
+    setSelectedItem(null);
     setExportError(null);
     setExportProgress(0);
-    setExportPhase('Starting render...');
+    setExportPhase('Exporting 1080p HD Video... (0%)');
     if (exportDownloadUrl) {
       URL.revokeObjectURL(exportDownloadUrl);
       urlsRef.current.delete(exportDownloadUrl);
@@ -1802,7 +1814,8 @@ export default function App() {
     icon: typeof Film;
   }> = [
     {id: 'media', label: 'Media', icon: Film},
-    {id: 'motion', label: 'Effects', icon: Move},
+    {id: 'effects', label: 'Effects', icon: Wand2},
+    {id: 'motion', label: 'Motion', icon: Move},
     {id: 'filters', label: 'Color', icon: Sliders},
     {id: 'bg-remove', label: 'BG Cut', icon: Eraser},
     {id: 'stickers', label: 'Stickers', icon: Smile},
@@ -1822,7 +1835,17 @@ export default function App() {
       } else if (item?.track === 'video') {
         setBgTargetKey('main');
       } else if (item?.track === 'effect') {
-        setMobileBottomTab((prev) => (prev === 'filters' ? prev : 'motion'));
+        const target = effectItems.find((e) => e.id === item.id);
+        const nextTab: RightPanelTab =
+          target?.category === 'fx34'
+            ? 'effects'
+            : target?.category === 'filter'
+              ? 'filters'
+              : 'motion';
+        setActiveRightTab(nextTab);
+        if (layoutMode === 'mobile-portrait') {
+          setMobileBottomTab(nextTab);
+        }
       } else if (item?.track === 'text') {
         setActiveRightTab('text');
         if (layoutMode === 'mobile-portrait') {
@@ -1835,7 +1858,7 @@ export default function App() {
         }
       }
     },
-    [overlayLayers, layoutMode]
+    [overlayLayers, effectItems, layoutMode]
   );
 
   const previewNode = (
@@ -1858,6 +1881,7 @@ export default function App() {
       totalDuration={totalDuration}
       isPlaying={isPlaying}
       isFullPreview={isFullPreview}
+      isExporting={isExporting}
       layoutMode={layoutMode}
       onToggleFullPreview={() => setIsFullPreview((f) => !f)}
       onAspectRatioChange={setAspectRatio}

@@ -73,6 +73,7 @@ interface PreviewCanvasPlayerProps {
   totalDuration: number;
   isPlaying: boolean;
   isFullPreview: boolean;
+  isExporting?: boolean;
   layoutMode?: ViewportLayoutMode;
   onToggleFullPreview: () => void;
   onAspectRatioChange: (ratio: AspectRatioPreset) => void;
@@ -140,6 +141,7 @@ export function PreviewCanvasPlayer({
   totalDuration,
   isPlaying,
   isFullPreview,
+  isExporting = false,
   layoutMode = 'desktop',
   onToggleFullPreview,
   onAspectRatioChange,
@@ -183,12 +185,19 @@ export function PreviewCanvasPlayer({
   const dragStateRef = useRef<CanvasDragState | null>(null);
 
   const [renderTick, setRenderTick] = useState(0);
+  const [dpr, setDpr] = useState<number>(() =>
+    typeof window !== 'undefined'
+      ? Math.min(window.devicePixelRatio || 1, 2)
+      : 1
+  );
   const [stageSize, setStageSize] = useState<{width: number; height: number}>({
     width: 640,
     height: 360,
   });
 
   const targetDims = ASPECT_RATIO_DIMENSIONS[aspectRatio];
+  const backingWidth = Math.max(2, Math.round(stageSize.width * dpr));
+  const backingHeight = Math.max(2, Math.round(stageSize.height * dpr));
 
   const videoSegments = useMemo(
     () =>
@@ -234,6 +243,8 @@ export function PreviewCanvasPlayer({
       }
       const nextW = Math.round(w);
       const nextH = Math.round(h);
+      const nextDpr = Math.min(window.devicePixelRatio || 1, 2);
+      setDpr((prev) => (prev === nextDpr ? prev : nextDpr));
       setStageSize((prev) =>
         prev.width === nextW && prev.height === nextH
           ? prev
@@ -584,8 +595,19 @@ export function PreviewCanvasPlayer({
     (timeToDraw: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', {alpha: false});
       if (!ctx) return;
+
+      const expectedW = Math.max(2, Math.round(stageSize.width * dpr));
+      const expectedH = Math.max(2, Math.round(stageSize.height * dpr));
+      if (canvas.width !== expectedW || canvas.height !== expectedH) {
+        canvas.width = expectedW;
+        canvas.height = expectedH;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
       const state = resolveVideoStateAtTime(videoSegments, timeToDraw);
       const primarySource = resolveSegmentSource(
@@ -610,8 +632,8 @@ export function PreviewCanvasPlayer({
 
       const result = renderEditorFrame({
         ctx,
-        canvasWidth: targetDims.width,
-        canvasHeight: targetDims.height,
+        canvasWidth: stageSize.width,
+        canvasHeight: stageSize.height,
         primarySource,
         primaryClipProgress,
         outgoingSource,
@@ -631,7 +653,7 @@ export function PreviewCanvasPlayer({
         currentTime: timeToDraw,
         selectedOverlayId,
         selectedTextId,
-        showSelectionBox: !isPlaying,
+        showSelectionBox: !isPlaying && !isExporting,
         onMaskUpdated: () => setRenderTick((t) => t + 1),
       });
       textBoundsRef.current = result.textBounds;
@@ -639,10 +661,11 @@ export function PreviewCanvasPlayer({
     },
     [
       canvasRef,
+      stageSize.width,
+      stageSize.height,
+      dpr,
       videoSegments,
       resolveSegmentSource,
-      targetDims.width,
-      targetDims.height,
       fitMode,
       filters,
       motionTransform,
@@ -654,6 +677,7 @@ export function PreviewCanvasPlayer({
       selectedOverlayId,
       selectedTextId,
       isPlaying,
+      isExporting,
     ]
   );
 
@@ -1097,8 +1121,8 @@ export function PreviewCanvasPlayer({
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     return {
-      x: ((e.clientX - rect.left) / rect.width) * targetDims.width,
-      y: ((e.clientY - rect.top) / rect.height) * targetDims.height,
+      x: ((e.clientX - rect.left) / rect.width) * stageSize.width,
+      y: ((e.clientY - rect.top) / rect.height) * stageSize.height,
     };
   };
 
@@ -1119,8 +1143,8 @@ export function PreviewCanvasPlayer({
             dragStateRef.current = {
               kind: 'overlay-resize',
               id: layer.id,
-              centerX: layer.x * targetDims.width,
-              centerY: layer.y * targetDims.height,
+              centerX: layer.x * stageSize.width,
+              centerY: layer.y * stageSize.height,
               aspectRatio: layer.aspectRatio > 0 ? layer.aspectRatio : 1,
             };
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -1144,8 +1168,8 @@ export function PreviewCanvasPlayer({
         dragStateRef.current = {
           kind: 'text',
           id: txt.id,
-          offsetX: pt.x / targetDims.width - txt.x,
-          offsetY: pt.y / targetDims.height - txt.y,
+          offsetX: pt.x / stageSize.width - txt.x,
+          offsetY: pt.y / stageSize.height - txt.y,
         };
         e.currentTarget.setPointerCapture(e.pointerId);
         return;
@@ -1166,8 +1190,8 @@ export function PreviewCanvasPlayer({
         dragStateRef.current = {
           kind: 'overlay-move',
           id: layer.id,
-          offsetX: pt.x / targetDims.width - layer.x,
-          offsetY: pt.y / targetDims.height - layer.y,
+          offsetX: pt.x / stageSize.width - layer.x,
+          offsetY: pt.y / stageSize.height - layer.y,
         };
         e.currentTarget.setPointerCapture(e.pointerId);
         return;
@@ -1184,21 +1208,21 @@ export function PreviewCanvasPlayer({
     if (drag.kind === 'text') {
       const nextX = Math.min(
         0.96,
-        Math.max(0.04, pt.x / targetDims.width - drag.offsetX)
+        Math.max(0.04, pt.x / stageSize.width - drag.offsetX)
       );
       const nextY = Math.min(
         0.96,
-        Math.max(0.04, pt.y / targetDims.height - drag.offsetY)
+        Math.max(0.04, pt.y / stageSize.height - drag.offsetY)
       );
       onMoveTextOverlay(drag.id, nextX, nextY);
     } else if (drag.kind === 'overlay-move') {
       const nextX = Math.min(
         0.96,
-        Math.max(0.04, pt.x / targetDims.width - drag.offsetX)
+        Math.max(0.04, pt.x / stageSize.width - drag.offsetX)
       );
       const nextY = Math.min(
         0.96,
-        Math.max(0.04, pt.y / targetDims.height - drag.offsetY)
+        Math.max(0.04, pt.y / stageSize.height - drag.offsetY)
       );
       onUpdateOverlay(drag.id, {x: nextX, y: nextY});
     } else if (drag.kind === 'overlay-resize') {
@@ -1207,7 +1231,7 @@ export function PreviewCanvasPlayer({
       const halfW = Math.max(24, halfWFromX, halfWFromY);
       const nextWidthNorm = Math.min(
         1,
-        Math.max(0.08, (halfW * 2) / targetDims.width)
+        Math.max(0.08, (halfW * 2) / stageSize.width)
       );
       onUpdateOverlay(drag.id, {width: nextWidthNorm});
     }
@@ -1442,8 +1466,8 @@ export function PreviewCanvasPlayer({
           >
             <canvas
               ref={canvasRef}
-              width={targetDims.width}
-              height={targetDims.height}
+              width={backingWidth}
+              height={backingHeight}
               onPointerDown={handleCanvasPointerDown}
               onPointerMove={handleCanvasPointerMove}
               onPointerUp={handleCanvasPointerUp}
@@ -1454,8 +1478,8 @@ export function PreviewCanvasPlayer({
         )}
       </div>
 
-      {/* Selected Overlay / PIP Properties Bar (Desktop only; mobile edits via Stickers/Overlay tab) */}
-      {selectedOverlay && !isFullPreview && !isMobile && (
+      {/* Selected Overlay / PIP Properties Bar (Desktop only; hidden during export) */}
+      {selectedOverlay && !isFullPreview && !isMobile && !isExporting && (
         <div className="shrink-0 border-t border-zinc-800/80 bg-[#10141B] px-3 py-1.5 flex flex-wrap items-center justify-between gap-3 text-[11px]">
           <div className="flex items-center gap-2 min-w-0">
             <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />

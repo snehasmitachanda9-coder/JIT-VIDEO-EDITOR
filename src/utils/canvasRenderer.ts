@@ -17,15 +17,21 @@ import {
   applyMaskToCanvas,
   getCachedMaskOrSchedule,
 } from './backgroundRemover';
+import {
+  drawDiscoFx,
+  drawFx34FrameTransforms,
+  drawFx34OverlayEffects,
+  drawFx34RevealAndClosures,
+} from './fx34Renderer';
 import {getStickerImageElement} from './stickerRenderer';
 
 export const ASPECT_RATIO_DIMENSIONS: Record<
   AspectRatioPreset,
   {width: number; height: number; label: string; subtitle: string}
 > = {
-  '16:9': {width: 1280, height: 720, label: '16:9', subtitle: 'YouTube'},
-  '9:16': {width: 720, height: 1280, label: '9:16', subtitle: 'Reels / Shorts'},
-  '1:1': {width: 1080, height: 1080, label: '1:1', subtitle: 'Square'},
+  '16:9': {width: 1920, height: 1080, label: '16:9', subtitle: 'YouTube'},
+  '9:16': {width: 1080, height: 1920, label: '9:16', subtitle: 'Reels / Shorts'},
+  '1:1': {width: 1440, height: 1440, label: '1:1', subtitle: 'Square'},
 };
 
 export const FILTER_PRESET_VALUES: Record<
@@ -262,12 +268,16 @@ function drawCover(
   canvasW: number,
   canvasH: number
 ) {
-  const scale = Math.max(canvasW / srcW, canvasH / srcH);
-  const drawW = srcW * scale;
-  const drawH = srcH * scale;
+  const safeSrcW = Math.max(1, srcW);
+  const safeSrcH = Math.max(1, srcH);
+  const scale = Math.max(canvasW / safeSrcW, canvasH / safeSrcH);
+  const drawW = safeSrcW * scale;
+  const drawH = safeSrcH * scale;
   const drawX = (canvasW - drawW) / 2;
   const drawY = (canvasH - drawH) / 2;
-  ctx.drawImage(source, drawX, drawY, drawW, drawH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, 0, 0, safeSrcW, safeSrcH, drawX, drawY, drawW, drawH);
 }
 
 function drawSubtleCheckerboard(
@@ -308,8 +318,10 @@ function applySharpenToCanvas(
   const ctx = out.getContext('2d', {willReadFrequently: true});
   if (!ctx) return out;
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(source, 0, 0, w, h);
+  ctx.drawImage(source, 0, 0, srcW, srcH, 0, 0, w, h);
 
   try {
     const imgData = ctx.getImageData(0, 0, w, h);
@@ -426,7 +438,12 @@ function computeTimedMotionDelta(
   let shakeOffsetY = 0;
 
   for (const ef of effectItems) {
-    if (ef.category !== 'motion') continue;
+    if (
+      ef.category !== 'motion' &&
+      !(ef.category === 'fx34' && ef.type === 'heart-beat')
+    ) {
+      continue;
+    }
     if (currentTime < ef.startTime || currentTime > ef.endTime) continue;
 
     const dur = Math.max(0.1, ef.endTime - ef.startTime);
@@ -470,7 +487,7 @@ function computeTimedMotionDelta(
       shakeOffsetY += sy;
       angleDeg += Math.sin(t * 11.5) * 1.9 * strength;
       zoomMultiplier *= 1 + 0.095 * strength;
-    } else if (ef.type === 'heartbeat-zoom') {
+    } else if (ef.type === 'heartbeat-zoom' || ef.type === 'heart-beat') {
       let pulse = 0;
       if (beatTimes.length > 0) {
         let minDist = 999;
@@ -486,7 +503,7 @@ function computeTimedMotionDelta(
       } else {
         // Organic 78 BPM lub-dub double pulse
         const period = 60 / 78;
-        const phase = (Math.max(0, currentTime - ef.startTime) % period);
+        const phase = Math.max(0, currentTime - ef.startTime) % period;
         const lub = Math.exp(-phase * 16);
         const dub =
           phase >= 0.16 ? 0.58 * Math.exp(-(phase - 0.16) * 19) : 0;
@@ -546,14 +563,14 @@ function drawTransformedSingleSource(params: {
   const drawH = naturalH * baseScale;
 
   let finalSource = source;
+  const activeDims = getCanvasSourceDims(source, naturalW, naturalH);
   if (filters.sharpen > 0) {
-    const dims = getCanvasSourceDims(source, naturalW, naturalH);
     finalSource = applySharpenToCanvas(
       source,
-      dims.w,
-      dims.h,
+      activeDims.w,
+      activeDims.h,
       filters.sharpen,
-      isExport ? 1080 : 640
+      isExport ? 1920 : 1280
     );
   }
 
@@ -598,19 +615,52 @@ function drawTransformedSingleSource(params: {
   const scaleY = totalZoom * (motionTransform.flipV ? -1 : 1);
 
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.translate(canvasWidth / 2 + panPxX, canvasHeight / 2 + panPxY);
   if (rad !== 0) ctx.rotate(rad);
   ctx.scale(scaleX, scaleY);
   ctx.filter = buildCanvasFilterString(filters);
-  ctx.drawImage(finalSource, -drawW / 2, -drawH / 2, drawW, drawH);
+  const drawSrcDims = getCanvasSourceDims(finalSource, naturalW, naturalH);
+  ctx.drawImage(
+    finalSource,
+    0,
+    0,
+    drawSrcDims.w,
+    drawSrcDims.h,
+    -drawW / 2,
+    -drawH / 2,
+    drawW,
+    drawH
+  );
 
   if (filters.preset === 'glitch') {
     const pulse = Math.abs(Math.sin(currentTime * 14.7));
     const offset = (4 + pulse * 14) * (canvasWidth / 1280);
     ctx.globalAlpha = 0.32;
     ctx.globalCompositeOperation = 'screen';
-    ctx.drawImage(finalSource, -drawW / 2 + offset, -drawH / 2, drawW, drawH);
-    ctx.drawImage(finalSource, -drawW / 2 - offset, -drawH / 2, drawW, drawH);
+    ctx.drawImage(
+      finalSource,
+      0,
+      0,
+      drawSrcDims.w,
+      drawSrcDims.h,
+      -drawW / 2 + offset,
+      -drawH / 2,
+      drawW,
+      drawH
+    );
+    ctx.drawImage(
+      finalSource,
+      0,
+      0,
+      drawSrcDims.w,
+      drawSrcDims.h,
+      -drawW / 2 - offset,
+      -drawH / 2,
+      drawW,
+      drawH
+    );
 
     const barSeed = Math.sin(currentTime * 23.1);
     if (barSeed > 0.25) {
@@ -620,13 +670,9 @@ function drawTransformedSingleSource(params: {
       ctx.drawImage(
         finalSource,
         0,
-        (barSeed * 0.7 + 0.15) *
-          getCanvasSourceDims(finalSource, naturalW, naturalH).h,
-        getCanvasSourceDims(finalSource, naturalW, naturalH).w,
-        Math.max(
-          8,
-          getCanvasSourceDims(finalSource, naturalW, naturalH).h * 0.06
-        ),
+        (barSeed * 0.7 + 0.15) * drawSrcDims.h,
+        drawSrcDims.w,
+        Math.max(8, drawSrcDims.h * 0.06),
         -drawW / 2 + offset * 2.2,
         sliceY,
         drawW,
@@ -784,19 +830,23 @@ function isPresetType(
 
 function drawSnapshotOfCanvas(
   ctx: CanvasRenderingContext2D,
-  canvasWidth: number,
-  canvasHeight: number,
+  _canvasWidth: number,
+  _canvasHeight: number,
   key = 'timed-effect-snapshot'
 ): HTMLCanvasElement | null {
   const snapshot = getScratchCanvas(key);
-  if (snapshot.width !== canvasWidth || snapshot.height !== canvasHeight) {
-    snapshot.width = canvasWidth;
-    snapshot.height = canvasHeight;
+  const backingW = Math.max(1, ctx.canvas.width);
+  const backingH = Math.max(1, ctx.canvas.height);
+  if (snapshot.width !== backingW || snapshot.height !== backingH) {
+    snapshot.width = backingW;
+    snapshot.height = backingH;
   }
   const sctx = snapshot.getContext('2d');
   if (!sctx) return null;
-  sctx.clearRect(0, 0, canvasWidth, canvasHeight);
-  sctx.drawImage(ctx.canvas, 0, 0, canvasWidth, canvasHeight);
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = 'high';
+  sctx.clearRect(0, 0, backingW, backingH);
+  sctx.drawImage(ctx.canvas, 0, 0, backingW, backingH);
   return snapshot;
 }
 
@@ -828,6 +878,8 @@ function drawGlitchOverlayPass(
       const yNorm = Math.abs(
         Math.sin(i * 4.9 + Math.floor(currentTime * 10) + 0.5)
       );
+      const srcY = yNorm * (snapshot.height * 0.88);
+      const srcH = Math.max(6, snapshot.height * (0.018 + intensity * 0.028));
       const sliceY = yNorm * (canvasHeight * 0.88);
       const sliceH = Math.max(6, canvasHeight * (0.018 + intensity * 0.028));
       const xOffset =
@@ -836,9 +888,9 @@ function drawGlitchOverlayPass(
       ctx.drawImage(
         snapshot,
         0,
-        sliceY,
-        canvasWidth,
-        sliceH,
+        srcY,
+        snapshot.width,
+        srcH,
         xOffset,
         sliceY,
         canvasWidth,
@@ -1328,75 +1380,16 @@ function drawStudioAndCinemaVfx(
     }
 
     if (ef.type === 'disco') {
-      let beatPulse = Math.pow(
-        0.5 + 0.5 * Math.sin(currentTime * ((126 / 60) * Math.PI * 2)),
-        2
+      drawDiscoFx(
+        ctx,
+        canvasWidth,
+        canvasHeight,
+        currentTime,
+        localTime,
+        intensity,
+        opacity,
+        beatTimes
       );
-      let beatIndex = Math.floor(currentTime / 0.476);
-      if (beatTimes.length > 0) {
-        let minDist = 999;
-        let closestIdx = 0;
-        for (let b = 0; b < beatTimes.length; b++) {
-          const d = Math.abs(currentTime - beatTimes[b]);
-          if (d < minDist) {
-            minDist = d;
-            closestIdx = b;
-          }
-        }
-        if (minDist < 0.22) {
-          beatPulse = Math.max(beatPulse, 1 - minDist / 0.22);
-          beatIndex = closestIdx;
-        }
-      }
-
-      const palette = [
-        '236, 72, 153',
-        '56, 189, 248',
-        '168, 85, 247',
-        '250, 204, 21',
-        '52, 211, 153',
-      ];
-      const c1 = palette[beatIndex % palette.length];
-      const c2 = palette[(beatIndex + 2) % palette.length];
-
-      ctx.save();
-      ctx.globalCompositeOperation = 'screen';
-      const sx1 = canvasWidth * (0.24 + 0.24 * Math.sin(localTime * 2.6));
-      const sy1 = canvasHeight * (0.28 + 0.18 * Math.cos(localTime * 2.1));
-      const g1 = ctx.createRadialGradient(
-        sx1,
-        sy1,
-        0,
-        sx1,
-        sy1,
-        Math.hypot(canvasWidth, canvasHeight) * 0.52
-      );
-      g1.addColorStop(
-        0,
-        `rgba(${c1}, ${((0.18 + beatPulse * 0.3) * intensity * opacity).toFixed(3)})`
-      );
-      g1.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = g1;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      const sx2 = canvasWidth * (0.76 - 0.2 * Math.cos(localTime * 2.4));
-      const sy2 = canvasHeight * (0.68 - 0.2 * Math.sin(localTime * 2.9));
-      const g2 = ctx.createRadialGradient(
-        sx2,
-        sy2,
-        0,
-        sx2,
-        sy2,
-        Math.hypot(canvasWidth, canvasHeight) * 0.48
-      );
-      g2.addColorStop(
-        0,
-        `rgba(${c2}, ${((0.16 + beatPulse * 0.26) * intensity * opacity).toFixed(3)})`
-      );
-      g2.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = g2;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-      ctx.restore();
       continue;
     }
 
@@ -1950,17 +1943,27 @@ function drawClipTransition(params: {
       const splitX = (1 - easedP) * canvasWidth;
       const outFace = getScratchCanvas('cube-out');
       const inFace = getScratchCanvas('cube-in');
-      if (outFace.width !== canvasWidth || outFace.height !== canvasHeight) {
-        outFace.width = canvasWidth;
-        outFace.height = canvasHeight;
+      const pxScale =
+        canvasWidth > 0 ? Math.max(1, ctx.canvas.width / canvasWidth) : 1;
+      const faceW = Math.max(2, Math.round(canvasWidth * pxScale));
+      const faceH = Math.max(2, Math.round(canvasHeight * pxScale));
+      if (outFace.width !== faceW || outFace.height !== faceH) {
+        outFace.width = faceW;
+        outFace.height = faceH;
       }
-      if (inFace.width !== canvasWidth || inFace.height !== canvasHeight) {
-        inFace.width = canvasWidth;
-        inFace.height = canvasHeight;
+      if (inFace.width !== faceW || inFace.height !== faceH) {
+        inFace.width = faceW;
+        inFace.height = faceH;
       }
       const octx = outFace.getContext('2d');
       const ictx = inFace.getContext('2d');
       if (octx && ictx) {
+        octx.setTransform(pxScale, 0, 0, pxScale, 0, 0);
+        ictx.setTransform(pxScale, 0, 0, pxScale, 0, 0);
+        octx.imageSmoothingEnabled = true;
+        octx.imageSmoothingQuality = 'high';
+        ictx.imageSmoothingEnabled = true;
+        ictx.imageSmoothingQuality = 'high';
         octx.clearRect(0, 0, canvasWidth, canvasHeight);
         ictx.clearRect(0, 0, canvasWidth, canvasHeight);
         drawTransformedSingleSource({
@@ -1997,7 +2000,7 @@ function drawClipTransition(params: {
         // Draw outgoing squished face on left [0..splitX]
         if (splitX > 1) {
           ctx.save();
-          ctx.drawImage(outFace, 0, 0, splitX, canvasHeight);
+          ctx.drawImage(outFace, 0, 0, faceW, faceH, 0, 0, splitX, canvasHeight);
           ctx.fillStyle = `rgba(0, 0, 0, ${(easedP * 0.52).toFixed(3)})`;
           ctx.fillRect(0, 0, splitX, canvasHeight);
           ctx.restore();
@@ -2006,7 +2009,17 @@ function drawClipTransition(params: {
         const inW = canvasWidth - splitX;
         if (inW > 1) {
           ctx.save();
-          ctx.drawImage(inFace, splitX, 0, inW, canvasHeight);
+          ctx.drawImage(
+            inFace,
+            0,
+            0,
+            faceW,
+            faceH,
+            splitX,
+            0,
+            inW,
+            canvasHeight
+          );
           ctx.fillStyle = `rgba(0, 0, 0, ${((1 - easedP) * 0.52).toFixed(3)})`;
           ctx.fillRect(splitX, 0, inW, canvasHeight);
           ctx.restore();
@@ -2158,6 +2171,8 @@ export function renderEditorFrame(params: {
   } = params;
 
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.filter = 'none';
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -2207,7 +2222,7 @@ export function renderEditorFrame(params: {
       bgRemoval: mainBgRemoval,
       precomputedMask: precomputedMainMask,
       onMaskUpdated,
-      maxProcessWidth: isExport ? 1080 : 680,
+      maxProcessWidth: isExport ? 1920 : 960,
     });
     const {w: pw, h: ph} = getMediaDims(primarySource);
 
@@ -2225,7 +2240,7 @@ export function renderEditorFrame(params: {
               source: outgoingSource,
               bgRemoval: mainBgRemoval,
               onMaskUpdated,
-              maxProcessWidth: isExport ? 1080 : 680,
+              maxProcessWidth: isExport ? 1920 : 960,
             })
           : outgoingSource;
 
@@ -2311,10 +2326,12 @@ export function renderEditorFrame(params: {
       bgRemoval: overlay.bgRemoval,
       precomputedMask: preMask,
       onMaskUpdated,
-      maxProcessWidth: isExport ? 960 : 540,
+      maxProcessWidth: isExport ? 1280 : 720,
     });
 
     ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.globalAlpha =
       Math.max(0, Math.min(1, overlay.opacity)) * anim.alphaMult;
 
@@ -2330,6 +2347,8 @@ export function renderEditorFrame(params: {
       ctx.rect(left, top, drawW * anim.revealFrac, drawH);
       ctx.clip();
     }
+
+    const overlaySrcDims = getCanvasSourceDims(cutout, drawW, drawH);
 
     if (applyImageOnlyVisualFx) {
       const ovDur = Math.max(0.1, overlay.endTime - overlay.startTime);
@@ -2362,11 +2381,31 @@ export function renderEditorFrame(params: {
       if (rad !== 0) ctx.rotate(rad);
       ctx.scale(sx, sy);
       ctx.filter = buildCanvasFilterString(filters);
-      ctx.drawImage(cutout, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.drawImage(
+        cutout,
+        0,
+        0,
+        overlaySrcDims.w,
+        overlaySrcDims.h,
+        -drawW / 2,
+        -drawH / 2,
+        drawW,
+        drawH
+      );
     } else {
       ctx.translate(centerX, centerY);
       ctx.scale(anim.scaleMult, anim.scaleMult);
-      ctx.drawImage(cutout, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.drawImage(
+        cutout,
+        0,
+        0,
+        overlaySrcDims.w,
+        overlaySrcDims.h,
+        -drawW / 2,
+        -drawH / 2,
+        drawW,
+        drawH
+      );
     }
     ctx.restore();
 
@@ -2413,13 +2452,23 @@ export function renderEditorFrame(params: {
     drawSingleOverlay(overlay, !mainReady);
   }
 
-  // 2.4 Global Color Grading, Vignette, Face Glow & Timed Filter/Glitch Effects
+  // 2.4 Global Color Grading, Vignette, Face Glow & Timed Filter/Glitch/FX34 Transforms
   if (mainReady || hasActivePipOverlay) {
     drawColorGradingAndVignette(ctx, canvasWidth, canvasHeight, filters);
     if (filters.faceGlow > 0) {
       drawFaceGlowBeautyPass(ctx, canvasWidth, canvasHeight, filters.faceGlow);
     }
     if (effectItems.length > 0) {
+      drawFx34FrameTransforms({
+        ctx,
+        canvasWidth,
+        canvasHeight,
+        effectItems,
+        currentTime,
+        isExport,
+        takeSnapshot: (key) =>
+          drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight, key),
+      });
       drawTimedFilterAndGlitchEffects(
         ctx,
         canvasWidth,
@@ -2438,6 +2487,16 @@ export function renderEditorFrame(params: {
       );
     }
   } else if (effectItems.length > 0) {
+    drawFx34FrameTransforms({
+      ctx,
+      canvasWidth,
+      canvasHeight,
+      effectItems,
+      currentTime,
+      isExport,
+      takeSnapshot: (key) =>
+        drawSnapshotOfCanvas(ctx, canvasWidth, canvasHeight, key),
+    });
     drawTimedFilterAndGlitchEffects(
       ctx,
       canvasWidth,
@@ -2456,9 +2515,17 @@ export function renderEditorFrame(params: {
     );
   }
 
-  // 2.6 Weather & Atmospheric Particle Effects Track
+  // 2.6 Weather & FX34 Overlay Particle/Light Effects Track
   if (effectItems.length > 0) {
     drawWeatherEffects(ctx, canvasWidth, canvasHeight, effectItems, currentTime);
+    drawFx34OverlayEffects({
+      ctx,
+      canvasWidth,
+      canvasHeight,
+      effectItems,
+      currentTime,
+      beatTimes,
+    });
   }
 
   // 3. Stickers & Official JIT Watermark Layers (crisp above VFX & weather)
@@ -2499,7 +2566,7 @@ export function renderEditorFrame(params: {
         : overlay.text;
 
     const scaledFontSize = Math.max(
-      12,
+      8,
       Math.round(overlay.fontSize * scaleFactor)
     );
     const lines = displayRaw.split('\n');
@@ -2600,6 +2667,17 @@ export function renderEditorFrame(params: {
       top: boxTop,
       width: boxWidth,
       height: boxHeight,
+    });
+  }
+
+  // 5. Full-frame Reveal, Iris, Curtain, Fade & Cinema Ending Overlays
+  if (effectItems.length > 0) {
+    drawFx34RevealAndClosures({
+      ctx,
+      canvasWidth,
+      canvasHeight,
+      effectItems,
+      currentTime,
     });
   }
 
